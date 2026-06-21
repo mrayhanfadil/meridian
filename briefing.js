@@ -2,6 +2,7 @@ import fs from "fs";
 import { log } from "./logger.js";
 import { getPerformanceSummary } from "./lessons.js";
 import { repoPath } from "./repo-root.js";
+import { getWalletBalances } from "./tools/wallet.js";
 
 const STATE_FILE = repoPath("state.json");
 const LESSONS_FILE = repoPath("lessons.json");
@@ -30,7 +31,38 @@ export async function generateBriefing() {
   const openPositions = allPositions.filter(p => !p.closed);
   const perfSummary = getPerformanceSummary();
 
-  // 5. Format Message
+  // 5. Wallet Balance
+  let walletLine = "Wallet: N/A";
+  try {
+    const balances = await getWalletBalances();
+    if (balances?.sol != null) {
+      walletLine = `Wallet: ◎${balances.sol.toFixed(4)} SOL ($${(balances.sol * 150).toFixed(2)})`;
+    }
+  } catch (e) { /* skip if RPC fails */ }
+
+  // 6. Best/Worst pools (by PnL)
+  const poolPerf = {};
+  for (const p of perfLast24h) {
+    const name = p.pool_name || p.pool || "unknown";
+    if (!poolPerf[name]) poolPerf[name] = { pnl: 0, count: 0, fees: 0 };
+    poolPerf[name].pnl += p.pnl_usd || 0;
+    poolPerf[name].fees += p.fees_earned_usd || 0;
+    poolPerf[name].count += 1;
+  }
+  const poolList = Object.entries(poolPerf).sort((a, b) => b[1].pnl - a[1].pnl);
+  const bestPool = poolList[0];
+  const worstPool = poolList[poolList.length - 1];
+
+  // 7. Open position details
+  const openDetails = openPositions.map(p => {
+    const pair = p.pool_name || "?";
+    const pnl = p.peak_pnl_pct ?? 0;
+    const yield24h = p.signal_snapshot?.fee_tvl_ratio ?? p.initial_fee_tvl_24h ?? "?";
+    const age = p.deployed_at ? Math.round((now - new Date(p.deployed_at)) / 60000) : "?";
+    return `• ${pair}: ${age}m old | peak ${pnl}% | yield ${yield24h}%`;
+  });
+
+  // 8. Format Message
   const lines = [
     "☀️ <b>Morning Briefing</b> (Last 24h)",
     "────────────────",
@@ -45,6 +77,13 @@ export async function generateBriefing() {
       ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}%`
       : "📈 Win Rate (24h): N/A",
     "",
+    `<b>Pool Performance:</b>`,
+    bestPool ? `🏆 Best: ${bestPool[0]} ($${bestPool[1].pnl.toFixed(2)}, ${bestPool[1].count}x)` : "🏆 Best: N/A",
+    worstPool ? `💀 Worst: ${worstPool[0]} ($${worstPool[1].pnl.toFixed(2)}, ${worstPool[1].count}x)` : "💀 Worst: N/A",
+    "",
+    `<b>Wallet:</b>`,
+    walletLine,
+    "",
     `<b>Lessons Learned:</b>`,
     lessonsLast24h.length > 0
       ? lessonsLast24h.map(l => `• ${l.rule}`).join("\n")
@@ -52,13 +91,14 @@ export async function generateBriefing() {
     "",
     `<b>Current Portfolio:</b>`,
     `📂 Open Positions: ${openPositions.length}`,
+    ...(openDetails.length > 0 ? openDetails : ["• No open positions"]),
     perfSummary
       ? `📊 All-time PnL: $${perfSummary.total_pnl_usd.toFixed(2)} (${perfSummary.win_rate_pct}% win)`
       : "",
     "────────────────"
   ];
 
-  return lines.join("\n");
+  return lines.filter(Boolean).join("\n");
 }
 
 function loadJson(file) {

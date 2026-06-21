@@ -189,7 +189,7 @@ async function maybeRunMissedBriefing() {
 
   // Only fire if it's past the scheduled time (1:00 AM UTC)
   const nowUtc = new Date();
-  const briefingHourUtc = 1;
+  const briefingHourUtc = 2;
   if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
 
   log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
@@ -731,8 +731,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   });
 
-  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
-  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
+  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
+  const briefingTask = cron.schedule(`0 2 * * *`, async () => {
     await runBriefing();
   }, { timezone: 'UTC' });
 
