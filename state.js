@@ -470,6 +470,45 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   return null;
 }
 
+/**
+ * Check if a position's yield has decayed significantly from deploy.
+ * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
+ * @param {string} position_address
+ * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
+ * @param {object} mgmtConfig
+ * Returns { action, reason } or null if no decay detected.
+ */
+export function checkYieldDecay(position_address, positionData, mgmtConfig) {
+  const decayConfig = mgmtConfig.yieldDecayCheck;
+  if (!decayConfig?.enabled) return null;
+
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.closed) return null;
+
+  const deployYield = pos.signal_snapshot?.fee_tvl_ratio ?? pos.initial_fee_tvl_24h;
+  const currentYield = positionData.fee_per_tvl_24h;
+  const ageMinutes = positionData.age_minutes ?? 0;
+
+  if (deployYield == null || currentYield == null) return null;
+  if (ageMinutes < (decayConfig.minAgeMinutes ?? 20)) return null;
+
+  const minDeployYield = decayConfig.maxYieldPct ?? 40;
+  if (deployYield < minDeployYield) return null;  // skip low-yield deploys
+
+  const dropPct = ((deployYield - currentYield) / deployYield) * 100;
+  const minDrop = decayConfig.minDropPct ?? 35;
+
+  if (dropPct >= minDrop) {
+    return {
+      action: "YIELD_DECAY",
+      reason: `Yield decay: ${currentYield.toFixed(2)}% (dropped ${dropPct.toFixed(1)}% from deploy ${deployYield.toFixed(2)}%, age: ${ageMinutes}m)`,
+    };
+  }
+
+  return null;
+}
+
 // ─── Briefing Tracking ─────────────────────────────────────────
 
 /**
