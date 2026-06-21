@@ -1,10 +1,11 @@
-config.js       | 47 +++++++++++++++++++++++++++++++++++++++++++++++
+config.js       | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
+ prompt.js       |  2 +-
  tools/dlmm.js   | 14 +++++++++++---
  tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++++++----------
- 3 files changed, 98 insertions(+), 13 deletions(-)
+ 4 files changed, 100 insertions(+), 14 deletions(-)
 
 diff --git a/config.js b/config.js
-index 73c7c86..45f20aa 100644
+index 73c7c86..19e6685 100644
 --- a/config.js
 +++ b/config.js
 @@ -54,6 +54,53 @@ if (gmgnUserConfig.apiKey || u.gmgnApiKey) {
@@ -61,6 +62,27 @@ index 73c7c86..45f20aa 100644
  function nonEmptyString(...values) {
    for (const value of values) {
      if (typeof value !== "string") continue;
+@@ -117,6 +164,7 @@ export const config = {
+     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
+     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
+     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
++    yieldDecayCheck:       u.yieldDecayCheck       ?? { enabled: false, minDropPct: 35, minAgeMinutes: 20, maxYieldPct: 40 },
+     minSolToOpen:          u.minSolToOpen          ?? 0.55,
+     deployAmountSol:       u.deployAmountSol       ?? 0.5,
+     gasReserve:            u.gasReserve            ?? 0.2,
+diff --git a/prompt.js b/prompt.js
+index 7379239..ff28fba 100644
+--- a/prompt.js
++++ b/prompt.js
+@@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
+ DEPLOY RULES:
+ - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
+ - bins_below = round(config.strategy.minBinsBelow + (candidate volatility/5)*(config.strategy.maxBinsBelow-config.strategy.minBinsBelow)) clamped to [minBinsBelow,maxBinsBelow]. Volatility must be a positive number; 0/unknown means skip.
+-- Use amount_y only, keep amount_x=0 and bins_above=0.
++- For strategy "spot": keep amount_x=0 and set bins_above = max(8, round(bins_below / 3)) for symmetric range. For strategy "bid_ask": keep amount_x=0 and bins_above=0.
+ - Bin steps must be [80-125].
+ - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
+ 
 diff --git a/tools/dlmm.js b/tools/dlmm.js
 index f1fb130..c0a1b8b 100644
 --- a/tools/dlmm.js
@@ -222,7 +244,21 @@ config.js
    function nonEmptyString(...values) {
      for (const value of values) {
        if (typeof value !== "string") continue;
-  +47 -0
+  @@ -117,6 +164,7 @@ export const config = {
+  +    yieldDecayCheck:       u.yieldDecayCheck       ?? { enabled: false, minDropPct: 35, minAgeMinutes: 20, maxYieldPct: 40 },
+       minSolToOpen:          u.minSolToOpen          ?? 0.55,
+       deployAmountSol:       u.deployAmountSol       ?? 0.5,
+       gasReserve:            u.gasReserve            ?? 0.2,
+  +48 -0
+
+prompt.js
+  @@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
+  -- Use amount_y only, keep amount_x=0 and bins_above=0.
+  +- For strategy "spot": keep amount_x=0 and set bins_above = max(8, round(bins_below / 3)) for symmetric range. For strategy "bid_ask": keep amount_x=0 and bins_above=0.
+   - Bin steps must be [80-125].
+   - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
+   
+  +1 -1
 
 tools/dlmm.js
   @@ -80,11 +80,19 @@ async function getDLMM() {
