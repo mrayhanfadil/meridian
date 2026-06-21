@@ -1,8 +1,8 @@
 config.js       | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
  prompt.js       |  2 +-
- tools/dlmm.js   | 31 ++++++++++++++-----------------
+ tools/dlmm.js   | 33 ++++++++++++++++-----------------
  tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++++++----------
- 4 files changed, 103 insertions(+), 28 deletions(-)
+ 4 files changed, 105 insertions(+), 28 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..19e6685 100644
@@ -84,7 +84,7 @@ index 7379239..ff28fba 100644
  - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
  
 diff --git a/tools/dlmm.js b/tools/dlmm.js
-index f1fb130..e31d562 100644
+index f1fb130..34fc0a7 100644
 --- a/tools/dlmm.js
 +++ b/tools/dlmm.js
 @@ -80,11 +80,19 @@ async function getDLMM() {
@@ -145,6 +145,22 @@ index f1fb130..e31d562 100644
  
    await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
  
+@@ -1719,6 +1716,7 @@ export async function closePosition({ position_address, reason }) {
+           txs: txHashes,
+           pnl_usd: pnlUsd,
+           pnl_pct: pnlPct,
++          pnl_true_usd: pnlTrueUsd,
+           base_mint: closeBaseMint,
+         };
+       }
+@@ -2022,6 +2020,7 @@ export async function closePosition({ position_address, reason }) {
+         txs: txHashes,
+         pnl_usd: pnlUsd,
+         pnl_pct: pnlPct,
++        pnl_true_usd: pnlTrueUsd,
+         base_mint: closeBaseMint,
+       };
+     }
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -345,7 +361,17 @@ tools/dlmm.js
    
      await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
    
-  +14 -17
+  @@ -1719,6 +1716,7 @@ export async function closePosition({ position_address, reason }) {
+  +          pnl_true_usd: pnlTrueUsd,
+             base_mint: closeBaseMint,
+           };
+         }
+  @@ -2022,6 +2020,7 @@ export async function closePosition({ position_address, reason }) {
+  +        pnl_true_usd: pnlTrueUsd,
+           base_mint: closeBaseMint,
+         };
+       }
+  +16 -17
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
