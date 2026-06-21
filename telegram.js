@@ -484,7 +484,6 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
 }
 
 export async function notifyClose({ pair, pnlUsd, pnlPct, reason }) {
-  if (hasActiveLiveMessage()) return;
   const sign = pnlUsd >= 0 ? "+" : "";
   const reasonLine = reason ? `\nReason: ${reason}` : "";
   await sendHTML(
