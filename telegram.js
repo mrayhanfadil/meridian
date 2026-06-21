@@ -485,7 +485,8 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
 
 export async function notifyClose({ pair, pnlUsd, pnlPct, reason }) {
   const sign = pnlUsd >= 0 ? "+" : "";
-  const reasonLine = reason ? `\nReason: ${reason}` : "";
+  const escapedReason = reason ? reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "";
+  const reasonLine = escapedReason ? `\nReason: ${escapedReason}` : "";
   await sendHTML(
     `🔒 <b>Closed</b> ${pair}\n` +
     `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)${reasonLine}`
