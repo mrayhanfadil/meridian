@@ -1716,6 +1716,7 @@ export async function closePosition({ position_address, reason }) {
           txs: txHashes,
           pnl_usd: pnlUsd,
           pnl_pct: pnlPct,
+          pnl_true_usd: pnlTrueUsd,
           base_mint: closeBaseMint,
         };
       }
@@ -2019,6 +2020,7 @@ export async function closePosition({ position_address, reason }) {
         txs: txHashes,
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
+        pnl_true_usd: pnlTrueUsd,
         base_mint: closeBaseMint,
       };
     }

@@ -483,13 +483,15 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, reason }) {
-  const sign = pnlUsd >= 0 ? "+" : "";
+export async function notifyClose({ pair, pnlUsd, pnlPct, reason, pnlUnit }) {
+  const sign = pnlUsd >= 0 ? "+" : "-";
+  const absPnl = Math.abs(pnlUsd ?? 0);
+  const unit = pnlUnit || "$";
   const escapedReason = reason ? reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "";
   const reasonLine = escapedReason ? `\nReason: ${escapedReason}` : "";
   await sendHTML(
     `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)${reasonLine}`
+    `PnL: ${sign}${unit}${absPnl.toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)${reasonLine}`
   );
 }
 

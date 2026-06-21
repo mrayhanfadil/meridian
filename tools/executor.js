@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, getTrackedPosition } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -629,7 +629,17 @@ export async function executeTool(name, args) {
       } else if (name === "deploy_position") {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason || null }).catch(() => {});
+        const hasTruePnl = result.pnl_true_usd != null;
+        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
+        // Compute true USD percentage from tracked position's initial value
+        let realPnlPct = result.pnl_pct ?? 0;
+        if (hasTruePnl) {
+          const tracked = getTrackedPosition(result.position || args.position_address);
+          const initialUsd = tracked?.initial_value_usd || 0;
+          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
+        }
+        const pnlUnit = hasTruePnl ? "$" : "◎";
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
