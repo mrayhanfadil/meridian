@@ -199,13 +199,14 @@ export function recordPoolDeploy(poolAddress, deployData) {
     const rawScope = String(config.management.repeatDeployCooldownScope || "token").toLowerCase();
     const scope = ["pool", "token", "both"].includes(rawScope) ? rawScope : "token";
     const recentRepeatDeploys = entry.deploys.slice(-triggerCount);
-    const repeatedFeeGeneratingDeploys =
+    // Trigger cooldown after N consecutive deploys regardless of fee generation.
+    // The goal is to prevent recycling through the same failing pools.
+    const repeatedDeploys =
       cooldownHours > 0 &&
-      recentRepeatDeploys.length >= triggerCount &&
-      recentRepeatDeploys.every((d) => d.pnl_pct != null && isFeeGeneratingDeploy(d));
+      recentRepeatDeploys.length >= triggerCount;
 
-    if (repeatedFeeGeneratingDeploys) {
-      const reason = `repeat fee-generating deploys (${triggerCount}x)`;
+    if (repeatedDeploys) {
+      const reason = `repeat deploys (${triggerCount}x)`;
       if (scope === "pool" || scope === "both" || !entry.base_mint) {
         const poolCooldownUntil = setPoolCooldown(entry, cooldownHours, reason);
         log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);

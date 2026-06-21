@@ -136,8 +136,9 @@ HARD RULES:
 - Bin Step: Only deploy in pools with bin_step between 80 and 125.
 - Volatility must be positive. If volatility is 0, null, or missing, do not deploy.
 - Range must cover at least 35 total bins. Never deploy 1-bin/tiny ranges.
-- For single-side SOL deploys (amount_y only, amount_x=0), do not request upside exposure:
-  use bins_below only, keep bins_above=0, and the upper bin will be pinned to the current active bin.
+- For single-side SOL deploys (amount_y only, amount_x=0):
+  For spot strategy, set bins_above = max(8, round(bins_below / 3)).
+  For bid_ask strategy, keep bins_above=0.
 
 Guidelines (only when user hasn't specified):
 - Strategy: omit the strategy field — the system will use the configured default from config.strategy.strategy
@@ -171,11 +172,11 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           bins_below: {
             type: "number",
-            description: "Number of bins below the current active bin. For single-side SOL deploys, this is the main range input: lower bin = active bin - bins_below, upper bin = active bin."
+            description: "Number of bins below the current active bin. For single-side SOL deploys, this is the main range input: lower bin = active bin - bins_below."
           },
           bins_above: {
             type: "number",
-            description: "Number of bins above the current active bin. Keep this at 0 for single-side SOL deploys. Only use this for dual-sided or explicit upside-exposure deploys."
+            description: "Number of bins above the current active bin. For spot strategy, set bins_above = max(8, round(bins_below / 3)) for symmetric range. For bid_ask strategy, keep at 0."
           },
           downside_pct: {
             type: "number",
