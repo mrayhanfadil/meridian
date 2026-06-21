@@ -1,8 +1,8 @@
 config.js       | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
  prompt.js       |  2 +-
- tools/dlmm.js   | 14 +++++++++++---
+ tools/dlmm.js   | 31 ++++++++++++++-----------------
  tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++++++----------
- 4 files changed, 100 insertions(+), 14 deletions(-)
+ 4 files changed, 103 insertions(+), 28 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..19e6685 100644
@@ -84,7 +84,7 @@ index 7379239..ff28fba 100644
  - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
  
 diff --git a/tools/dlmm.js b/tools/dlmm.js
-index f1fb130..c0a1b8b 100644
+index f1fb130..e31d562 100644
 --- a/tools/dlmm.js
 +++ b/tools/dlmm.js
 @@ -80,11 +80,19 @@ async function getDLMM() {
@@ -110,6 +110,41 @@ index f1fb130..c0a1b8b 100644
  }
  
  function getWallet() {
+@@ -549,14 +557,8 @@ export async function deployPosition({
+     throw new Error("Invalid deploy amount: provide a positive amount_y/amount_sol.");
+   }
+   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
+-  if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
+-    throw new Error(
+-      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
+-    );
+-  }
+-  if (isSingleSidedSol) {
+-    activeBinsAbove = 0;
+-  }
++  // Allow bins_above > 0 for single-sided SOL — upper bins will be empty (no token X)
++  // but the position range extends above active bin, providing OOR protection on upside.
+   activeBinsBelow = Number(activeBinsBelow);
+   activeBinsAbove = Number(activeBinsAbove);
+   if (!Number.isFinite(activeBinsBelow) || !Number.isFinite(activeBinsAbove)) {
+@@ -596,16 +598,11 @@ export async function deployPosition({
+ 
+   const isWideRange = totalBins > 69;
+   const minBinId = activeBin.binId - activeBinsBelow;
+-  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
++  const maxBinId = activeBin.binId + activeBinsAbove;
+ 
+   if (minBinId > maxBinId) {
+     throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
+   }
+-  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
+-    throw new Error(
+-      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
+-    );
+-  }
+ 
+   await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
+ 
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -281,7 +316,36 @@ tools/dlmm.js
    }
    
    function getWallet() {
-  +11 -3
+  @@ -549,14 +557,8 @@ export async function deployPosition({
+  -  if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
+  -    throw new Error(
+  -      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
+  -    );
+  -  }
+  -  if (isSingleSidedSol) {
+  -    activeBinsAbove = 0;
+  -  }
+  +  // Allow bins_above > 0 for single-sided SOL — upper bins will be empty (no token X)
+  +  // but the position range extends above active bin, providing OOR protection on upside.
+     activeBinsBelow = Number(activeBinsBelow);
+     activeBinsAbove = Number(activeBinsAbove);
+     if (!Number.isFinite(activeBinsBelow) || !Number.isFinite(activeBinsAbove)) {
+  @@ -596,16 +598,11 @@ export async function deployPosition({
+  -  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
+  +  const maxBinId = activeBin.binId + activeBinsAbove;
+   
+     if (minBinId > maxBinId) {
+       throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
+     }
+  -  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
+  -    throw new Error(
+  -      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
+  -    );
+  -  }
+   
+     await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
+   
+  +14 -17
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
