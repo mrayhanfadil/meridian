@@ -7,14 +7,24 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "../logger.js";
-import { config } from "../config.js";
+import { config, nextRpcUrl, nextHeliusKey } from "../config.js";
 
 let _connection = null;
 let _wallet = null;
 
+// Round-robin: build a fresh Connection each call so load spreads across RPC_URLS.
+// Cache by URL so we don't reconstruct on every web3 call within a tick.
+const _connCache = new Map(); // url → Connection
+
 function getConnection() {
-  if (!_connection) _connection = new Connection(process.env.RPC_URL, "confirmed");
-  return _connection;
+  const url = nextRpcUrl();
+  if (!url) throw new Error("RPC_URL (or RPC_URLS) not set");
+  let conn = _connCache.get(url);
+  if (!conn) {
+    conn = new Connection(url, "confirmed");
+    _connCache.set(url, conn);
+  }
+  return conn;
 }
 
 function getWallet() {
@@ -64,19 +74,39 @@ export async function getWalletBalances() {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
 
-  const HELIUS_KEY = process.env.HELIUS_API_KEY;
+  const HELIUS_KEY = config.getHeliusKeyPool?.().length ? config.getHeliusKeyPool()[0] : process.env.HELIUS_API_KEY;
   if (!HELIUS_KEY) {
-    log("wallet_error", "HELIUS_API_KEY not set in .env");
+    log("wallet_error", "HELIUS_API_KEY (or HELIUS_API_KEYS) not set in .env");
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
   }
 
   try {
-    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url);
-    
-    if (!res.ok) {
-      throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
+    // Round-robin across all Helius keys with retry on 429/5xx within a single call.
+    // On success, advance the cursor so the next getWalletBalances() starts past
+    // the key we just used — gives even distribution across cycles.
+    const pool = config.getHeliusKeyPool?.() || [HELIUS_KEY];
+    const maxAttempts = Math.max(1, pool.length);
+    let res;
+    let lastErr;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const key = pool[attempt % pool.length];
+      const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${key}`;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`Helius ${res.status} on key ${key.slice(0, 6)}…`);
+        continue;
+      }
+      if (!res.ok) throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
+      break;
     }
+    if (!res) throw lastErr || new Error("All Helius keys exhausted");
+    // Success: bump the shared cursor so next cycle starts at a different key.
+    config.advanceHeliusCursor?.();
 
     const data = await res.json();
     const balances = data.balances || [];

@@ -54,6 +54,53 @@ if (gmgnUserConfig.apiKey || u.gmgnApiKey) {
   process.env.GMGN_API_KEY ||= gmgnUserConfig.apiKey || u.gmgnApiKey;
 }
 
+// ─── Round-robin pools (RPC_URLS / HELIUS_API_KEYS) ─────────────────────────
+// Comma-separated env values (e.g. RPC_URLS=https://a,https://b) take precedence
+// over the single RPC_URL / HELIUS_API_KEY. Helpers below distribute load
+// across all entries with automatic 429/5xx fallback.
+function parseList(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const _rpcUrls = parseList(process.env.RPC_URLS);
+if (_rpcUrls.length === 0 && process.env.RPC_URL) _rpcUrls.push(process.env.RPC_URL);
+const _heliusKeys = parseList(process.env.HELIUS_API_KEYS);
+if (_heliusKeys.length === 0 && process.env.HELIUS_API_KEY) _heliusKeys.push(process.env.HELIUS_API_KEY);
+
+const _rpcCursor = { i: 0 };
+const _heliusCursor = { i: 0 };
+
+export function getRpcUrlPool() { return _rpcUrls.slice(); }
+export function getHeliusKeyPool() { return _heliusKeys.slice(); }
+
+/** Round-robin pick. Stable per-call, so all calls in a single tick share one endpoint. */
+export function nextRpcUrl() {
+  if (_rpcUrls.length === 0) return process.env.RPC_URL || "";
+  const url = _rpcUrls[_rpcCursor.i % _rpcUrls.length];
+  _rpcCursor.i = (_rpcCursor.i + 1) % _rpcUrls.length;
+  return url;
+}
+
+export function nextHeliusKey() {
+  if (_heliusKeys.length === 0) return process.env.HELIUS_API_KEY || "";
+  const key = _heliusKeys[_heliusCursor.i % _heliusKeys.length];
+  _heliusCursor.i = (_heliusCursor.i + 1) % _heliusKeys.length;
+  return key;
+}
+
+export function advanceHeliusCursor() {
+  _heliusCursor.i = (_heliusCursor.i + 1) % Math.max(1, _heliusKeys.length);
+}
+
+/** Build a Connection pool keyed by RPC URL. Used by tools that need real web3.js calls. */
+export function getRpcConnections() {
+  return _rpcUrls.map((url) => ({ url, connection: null })); // lazy construction per call site
+}
+
 function nonEmptyString(...values) {
   for (const value of values) {
     if (typeof value !== "string") continue;

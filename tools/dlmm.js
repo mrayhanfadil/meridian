@@ -80,11 +80,19 @@ async function getDLMM() {
 let _connection = null;
 let _wallet = null;
 
+// Round-robin RPC: cache one Connection per URL from the pool so requests
+// spread across RPC_URLS without rebuilding on every web3 call.
+const _connCache = new Map(); // url → Connection
+
 function getConnection() {
-  if (!_connection) {
-    _connection = new Connection(process.env.RPC_URL, "confirmed");
+  const url = config.nextRpcUrl ? config.nextRpcUrl() : (process.env.RPC_URL || "");
+  if (!url) throw new Error("RPC_URL (or RPC_URLS) not set");
+  let conn = _connCache.get(url);
+  if (!conn) {
+    conn = new Connection(url, "confirmed");
+    _connCache.set(url, conn);
   }
-  return _connection;
+  return conn;
 }
 
 function getWallet() {
