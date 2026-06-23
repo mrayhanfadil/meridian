@@ -1,13 +1,22 @@
-config.js       | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
+config.js       | 50 +++++++++++++++++++++++++++++++++++++++++++++++++-
  prompt.js       |  2 +-
  tools/dlmm.js   | 33 ++++++++++++++++-----------------
  tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++++++----------
- 4 files changed, 105 insertions(+), 28 deletions(-)
+ 4 files changed, 106 insertions(+), 29 deletions(-)
 
 diff --git a/config.js b/config.js
-index 73c7c86..19e6685 100644
+index 73c7c86..906ad56 100644
 --- a/config.js
 +++ b/config.js
+@@ -13,7 +13,7 @@ const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
+ const u = fs.existsSync(USER_CONFIG_PATH)
+   ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
+   : {};
+-export const MIN_SAFE_BINS_BELOW = 35;
++export const MIN_SAFE_BINS_BELOW = 10;
+ 
+ function numericConfig(value) {
+   const n = Number(value);
 @@ -54,6 +54,53 @@ if (gmgnUserConfig.apiKey || u.gmgnApiKey) {
    process.env.GMGN_API_KEY ||= gmgnUserConfig.apiKey || u.gmgnApiKey;
  }
@@ -244,6 +253,12 @@ index d7a4e28..e36a289 100644
 --- Changes ---
 
 config.js
+  @@ -13,7 +13,7 @@ const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
+  -export const MIN_SAFE_BINS_BELOW = 35;
+  +export const MIN_SAFE_BINS_BELOW = 10;
+   
+   function numericConfig(value) {
+     const n = Number(value);
   @@ -54,6 +54,53 @@ if (gmgnUserConfig.apiKey || u.gmgnApiKey) {
   +// ─── Round-robin pools (RPC_URLS / HELIUS_API_KEYS) ─────────────────────────
   +// Comma-separated env values (e.g. RPC_URLS=https://a,https://b) take precedence
@@ -300,7 +315,7 @@ config.js
        minSolToOpen:          u.minSolToOpen          ?? 0.55,
        deployAmountSol:       u.deployAmountSol       ?? 0.5,
        gasReserve:            u.gasReserve            ?? 0.2,
-  +48 -0
+  +49 -1
 
 prompt.js
   @@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
