@@ -631,11 +631,24 @@ export async function executeTool(name, args) {
       } else if (name === "close_position") {
         const hasTruePnl = result.pnl_true_usd != null;
         const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
-        // Compute true USD percentage from tracked position's initial value
+        // Compute true USD percentage — use final_value_usd from Meteora if available
+        // since initial_value_usd is sometimes stored as SOL amount instead of USD
         let realPnlPct = result.pnl_pct ?? 0;
-        if (hasTruePnl) {
+        if (hasTruePnl && result.pnl_true_usd != null) {
           const tracked = getTrackedPosition(result.position || args.position_address);
-          const initialUsd = tracked?.initial_value_usd || 0;
+          // Try multiple sources for the initial USD value, in order of reliability
+          let initialUsd = 0;
+          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
+            // Looks like a real USD value (>10 means it's not just the SOL amount)
+            initialUsd = tracked.initial_value_usd;
+          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
+            initialUsd = result.initial_value_usd;
+          } else if (result.deposited_usd) {
+            initialUsd = result.deposited_usd;
+          } else if (tracked?.amount_sol) {
+            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
+            initialUsd = tracked.amount_sol * 73;
+          }
           if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
         }
         const pnlUnit = hasTruePnl ? "$" : "◎";
