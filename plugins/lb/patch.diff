@@ -1,8 +1,10 @@
-config.js       | 50 +++++++++++++++++++++++++++++++++++++++++++++++++-
+config.js       | 50 +++++++++++++++++++++++++++++++++++++++++++++-
+ index.js        | 27 +++++++++++++++++++------
  prompt.js       |  2 +-
- tools/dlmm.js   | 33 ++++++++++++++++-----------------
- tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++++++----------
- 4 files changed, 106 insertions(+), 29 deletions(-)
+ state.js        | 61 ++++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ tools/dlmm.js   | 33 +++++++++++++++----------------
+ tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++----------
+ 6 files changed, 183 insertions(+), 40 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..906ad56 100644
@@ -79,6 +81,79 @@ index 73c7c86..906ad56 100644
      minSolToOpen:          u.minSolToOpen          ?? 0.55,
      deployAmountSol:       u.deployAmountSol       ?? 0.5,
      gasReserve:            u.gasReserve            ?? 0.2,
+diff --git a/index.js b/index.js
+index 51cc831..a53aebd 100644
+--- a/index.js
++++ b/index.js
+@@ -25,7 +25,7 @@ import {
+   createLiveMessage,
+ } from "./telegram.js";
+ import { generateBriefing } from "./briefing.js";
+-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
++import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+ import { getActiveStrategy } from "./strategy-library.js";
+ import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+ import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+@@ -189,7 +189,7 @@ async function maybeRunMissedBriefing() {
+ 
+   // Only fire if it's past the scheduled time (1:00 AM UTC)
+   const nowUtc = new Date();
+-  const briefingHourUtc = 1;
++  const briefingHourUtc = 2;
+   if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
+ 
+   log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
+@@ -245,7 +245,8 @@ export async function runManagementCycle({ silent = false } = {}) {
+       const exit = updatePnlAndCheckExits(p.position, p, config.management);
+       if (exit) {
+         if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
+-          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
++          const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
++          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
+             scheduleTrailingDropConfirmation(p.position);
+           }
+           continue;
+@@ -731,8 +732,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+     }
+   });
+ 
+-  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
+-  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
++  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
++  const briefingTask = cron.schedule(`0 2 * * *`, async () => {
+     await runBriefing();
+   }, { timezone: 'UTC' });
+ 
+@@ -763,7 +764,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+         const exit = updatePnlAndCheckExits(p.position, p, config.management);
+         if (exit) {
+           if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
+-            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
++            const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
++            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
+               scheduleTrailingDropConfirmation(p.position);
+             }
+             continue;
+@@ -792,6 +794,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
+           }
+           break;
+         }
++        const decayCheck = checkYieldDecay(p.position, p, config.management);
++        if (decayCheck) {
++          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
++          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
++          if (sinceLastTrigger >= cooldownMs) {
++            _pollTriggeredAt = Date.now();
++            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — triggering management`);
++            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
++          } else {
++            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
++          }
++          break;
++        }
+       }
+     } finally {
+       _pnlPollBusy = false;
 diff --git a/prompt.js b/prompt.js
 index 7379239..ff28fba 100644
 --- a/prompt.js
@@ -92,6 +167,93 @@ index 7379239..ff28fba 100644
  - Bin steps must be [80-125].
  - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
  
+diff --git a/state.js b/state.js
+index ce8822a..39a49b2 100644
+--- a/state.js
++++ b/state.js
+@@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
+     };
+   }
+ 
+-  // ── Trailing TP ────────────────────────────────────────────────
++  // ── Trailing TP (time-decay) ────────────────────────────────────
+   if (!pnl_pct_suspicious && pos.trailing_active) {
++    // Time-decay trailing drop: young positions = tight, old positions = wide
++    let effectiveDropPct = mgmtConfig.trailingDropPct;
++    if (positionData?.age_minutes != null) {
++      if (positionData.age_minutes < 30) {
++        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
++      } else if (positionData.age_minutes < 90) {
++        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
++      } else {
++        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
++      }
++    }
+     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
+-    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
++    if (dropFromPeak >= effectiveDropPct) {
+       return {
+         action: "TRAILING_TP",
+-        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
++        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
+         needs_confirmation: true,
+         peak_pnl_pct: pos.peak_pnl_pct,
+         current_pnl_pct: currentPnlPct,
+         drop_from_peak_pct: dropFromPeak,
+-      };
+-    }
++        effective_drop_pct: effectiveDropPct,
++        };
++        }
+   }
+ 
+   // ── Out of range too long ──────────────────────────────────────
+@@ -470,6 +482,45 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
+   return null;
+ }
+ 
++/**
++ * Check if a position's yield has decayed significantly from deploy.
++ * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
++ * @param {string} position_address
++ * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
++ * @param {object} mgmtConfig
++ * Returns { action, reason } or null if no decay detected.
++ */
++export function checkYieldDecay(position_address, positionData, mgmtConfig) {
++  const decayConfig = mgmtConfig.yieldDecayCheck;
++  if (!decayConfig?.enabled) return null;
++
++  const state = load();
++  const pos = state.positions[position_address];
++  if (!pos || pos.closed) return null;
++
++  const deployYield = pos.signal_snapshot?.fee_tvl_ratio ?? pos.initial_fee_tvl_24h;
++  const currentYield = positionData.fee_per_tvl_24h;
++  const ageMinutes = positionData.age_minutes ?? 0;
++
++  if (deployYield == null || currentYield == null) return null;
++  if (ageMinutes < (decayConfig.minAgeMinutes ?? 20)) return null;
++
++  const minDeployYield = decayConfig.maxYieldPct ?? 40;
++  if (deployYield < minDeployYield) return null;  // skip low-yield deploys
++
++  const dropPct = ((deployYield - currentYield) / deployYield) * 100;
++  const minDrop = decayConfig.minDropPct ?? 35;
++
++  if (dropPct >= minDrop) {
++    return {
++      action: "YIELD_DECAY",
++      reason: `Yield decay: ${currentYield.toFixed(2)}% (dropped ${dropPct.toFixed(1)}% from deploy ${deployYield.toFixed(2)}%, age: ${ageMinutes}m)`,
++    };
++  }
++
++  return null;
++}
++
+ // ─── Briefing Tracking ─────────────────────────────────────────
+ 
+ /**
 diff --git a/tools/dlmm.js b/tools/dlmm.js
 index f1fb130..34fc0a7 100644
 --- a/tools/dlmm.js
@@ -317,6 +479,60 @@ config.js
        gasReserve:            u.gasReserve            ?? 0.2,
   +49 -1
 
+index.js
+  @@ -25,7 +25,7 @@ import {
+  -import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+  +import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+   import { getActiveStrategy } from "./strategy-library.js";
+   import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
+   import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+  @@ -189,7 +189,7 @@ async function maybeRunMissedBriefing() {
+  -  const briefingHourUtc = 1;
+  +  const briefingHourUtc = 2;
+     if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
+   
+     log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
+  @@ -245,7 +245,8 @@ export async function runManagementCycle({ silent = false } = {}) {
+  -          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+  +          const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
+  +          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
+               scheduleTrailingDropConfirmation(p.position);
+             }
+             continue;
+  @@ -731,8 +732,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  -  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
+  -  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
+  +  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
+  +  const briefingTask = cron.schedule(`0 2 * * *`, async () => {
+       await runBriefing();
+     }, { timezone: 'UTC' });
+   
+  @@ -763,7 +764,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  -            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+  +            const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
+  +            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
+                 scheduleTrailingDropConfirmation(p.position);
+               }
+               continue;
+  @@ -792,6 +794,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  +        const decayCheck = checkYieldDecay(p.position, p, config.management);
+  +        if (decayCheck) {
+  +          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+  +          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+  +          if (sinceLastTrigger >= cooldownMs) {
+  +            _pollTriggeredAt = Date.now();
+  +            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — triggering management`);
+  +            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+  +          } else {
+  +            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
+  +          }
+  +          break;
+  +        }
+         }
+       } finally {
+         _pnlPollBusy = false;
+  +21 -6
+
 prompt.js
   @@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
   -- Use amount_y only, keep amount_x=0 and bins_above=0.
@@ -325,6 +541,86 @@ prompt.js
    - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
    
   +1 -1
+
+state.js
+  @@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
+  -  // ── Trailing TP ────────────────────────────────────────────────
+  +  // ── Trailing TP (time-decay) ────────────────────────────────────
+     if (!pnl_pct_suspicious && pos.trailing_active) {
+  +    // Time-decay trailing drop: young positions = tight, old positions = wide
+  +    let effectiveDropPct = mgmtConfig.trailingDropPct;
+  +    if (positionData?.age_minutes != null) {
+  +      if (positionData.age_minutes < 30) {
+  +        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
+  +      } else if (positionData.age_minutes < 90) {
+  +        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
+  +      } else {
+  +        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
+  +      }
+  +    }
+       const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
+  -    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
+  +    if (dropFromPeak >= effectiveDropPct) {
+         return {
+           action: "TRAILING_TP",
+  -        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
+  +        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
+           needs_confirmation: true,
+           peak_pnl_pct: pos.peak_pnl_pct,
+           current_pnl_pct: currentPnlPct,
+           drop_from_peak_pct: dropFromPeak,
+  -      };
+  -    }
+  +        effective_drop_pct: effectiveDropPct,
+  +        };
+  +        }
+     }
+   
+     // ── Out of range too long ──────────────────────────────────────
+  @@ -470,6 +482,45 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
+  +/**
+  + * Check if a position's yield has decayed significantly from deploy.
+  + * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
+  + * @param {string} position_address
+  + * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
+  + * @param {object} mgmtConfig
+  + * Returns { action, reason } or null if no decay detected.
+  + */
+  +export function checkYieldDecay(position_address, positionData, mgmtConfig) {
+  +  const decayConfig = mgmtConfig.yieldDecayCheck;
+  +  if (!decayConfig?.enabled) return null;
+  +
+  +  const state = load();
+  +  const pos = state.positions[position_address];
+  +  if (!pos || pos.closed) return null;
+  +
+  +  const deployYield = pos.signal_snapshot?.fee_tvl_ratio ?? pos.initial_fee_tvl_24h;
+  +  const currentYield = positionData.fee_per_tvl_24h;
+  +  const ageMinutes = positionData.age_minutes ?? 0;
+  +
+  +  if (deployYield == null || currentYield == null) return null;
+  +  if (ageMinutes < (decayConfig.minAgeMinutes ?? 20)) return null;
+  +
+  +  const minDeployYield = decayConfig.maxYieldPct ?? 40;
+  +  if (deployYield < minDeployYield) return null;  // skip low-yield deploys
+  +
+  +  const dropPct = ((deployYield - currentYield) / deployYield) * 100;
+  +  const minDrop = decayConfig.minDropPct ?? 35;
+  +
+  +  if (dropPct >= minDrop) {
+  +    return {
+  +      action: "YIELD_DECAY",
+  +      reason: `Yield decay: ${currentYield.toFixed(2)}% (dropped ${dropPct.toFixed(1)}% from deploy ${deployYield.toFixed(2)}%, age: ${ageMinutes}m)`,
+  +    };
+  +  }
+  +
+  +  return null;
+  +}
+  +
+   // ─── Briefing Tracking ─────────────────────────────────────────
+   
+   /**
+  +56 -5
 
 tools/dlmm.js
   @@ -80,11 +80,19 @@ async function getDLMM() {
