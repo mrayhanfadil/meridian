@@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
 import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
+import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
 
 import { REPO_ROOT, repoPath } from "./repo-root.js";
 
@@ -761,6 +762,20 @@ Summarize the current portfolio health, total fees earned, and performance of al
         ) {
           schedulePeakConfirmation(p.position);
         }
+        // ── Indicator-based exit (TP at peak on reversal signal) ───
+        if (config.indicators?.enabled && (p.pnl_pct ?? 0) > 0) {
+          const indicatorExit = await checkIndicatorExit(p).catch(() => null);
+          if (indicatorExit?.shouldExit) {
+            const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+            const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+            if (sinceLastTrigger >= cooldownMs) {
+              _pollTriggeredAt = Date.now();
+              log("state", `[PnL poll] Indicator exit: ${p.pair} — ${indicatorExit.reason} (PnL ${p.pnl_pct.toFixed(2)}%) — triggering management`);
+              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+            }
+            break;
+          }
+        }
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
           if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
@@ -834,6 +849,55 @@ function withTimeout(promise, ms) {
   ]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+}
+
+// ── Indicator-based exit (TP at peak on reversal) ─────────────────
+// Rate-limited: check at most once per 60s per position to avoid API spam
+const _indicatorCheckCache = new Map(); // position_address -> { result, ts }
+async function checkIndicatorExit(position) {
+  const cacheKey = position.position;
+  const now = Date.now();
+  const cached = _indicatorCheckCache.get(cacheKey);
+  if (cached && now - cached.ts < 60_000) {
+    return cached.result;
+  }
+  try {
+    const baseMint = position.base_mint;
+    if (!baseMint) return { shouldExit: false, reason: "no base_mint" };
+    const payload = await agentMeridianJson(
+      `/chart-indicators/${baseMint}?interval=5_MINUTE&candles=50&rsiLength=2`,
+      { headers: getAgentMeridianHeaders() }
+    );
+    const latest = payload?.latest || {};
+    const candle = latest?.candle || {};
+    const rsi = latest?.rsi?.value;
+    const st = latest?.supertrend || {};
+    const isBearish = st.direction === "bearish";
+    const supertrendBreakDown = !!latest?.states?.supertrendBreakDown;
+    const close = Number(candle.close);
+    const supertrendValue = Number(st.value);
+    const rsiOverbought = Number(config.indicators.rsiOverbought ?? 80);
+    const result = {
+      shouldExit: false,
+      reason: "",
+      signal: { rsi, supertrendDirection: st.direction, close, supertrendValue },
+    };
+    // Exit if Supertrend flipped bearish OR price broke below Supertrend
+    if (supertrendBreakDown) {
+      result.shouldExit = true;
+      result.reason = `Supertrend flipped bearish (close ${close} < ST ${supertrendValue})`;
+    } else if (isBearish && Number.isFinite(close) && Number.isFinite(supertrendValue) && close < supertrendValue) {
+      result.shouldExit = true;
+      result.reason = `Price below bearish Supertrend (close ${close} < ST ${supertrendValue})`;
+    } else if (rsi != null && rsi >= rsiOverbought) {
+      result.shouldExit = true;
+      result.reason = `RSI overbought (${rsi} >= ${rsiOverbought})`;
+    }
+    _indicatorCheckCache.set(cacheKey, { result, ts: now });
+    return result;
+  } catch (e) {
+    return { shouldExit: false, reason: `indicator error: ${e.message}` };
+  }
 }
 
 async function shutdown(signal) {
