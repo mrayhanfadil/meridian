@@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     };
   }
 
-  // ── Trailing TP ────────────────────────────────────────────────
+  // ── Trailing TP (time-decay) ────────────────────────────────────
   if (!pnl_pct_suspicious && pos.trailing_active) {
+    // Time-decay trailing drop: young positions = tight, old positions = wide
+    let effectiveDropPct = mgmtConfig.trailingDropPct;
+    if (positionData?.age_minutes != null) {
+      if (positionData.age_minutes < 30) {
+        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
+      } else if (positionData.age_minutes < 90) {
+        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
+      } else {
+        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
+      }
+    }
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
-    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
+    if (dropFromPeak >= effectiveDropPct) {
       return {
         action: "TRAILING_TP",
-        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
+        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
         needs_confirmation: true,
         peak_pnl_pct: pos.peak_pnl_pct,
         current_pnl_pct: currentPnlPct,
         drop_from_peak_pct: dropFromPeak,
-      };
-    }
+        effective_drop_pct: effectiveDropPct,
+        };
+        }
   }
 
   // ── Out of range too long ──────────────────────────────────────
