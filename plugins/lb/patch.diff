@@ -1,10 +1,10 @@
-config.js       | 50 +++++++++++++++++++++++++++++++++++++++++++++-
- index.js        | 27 +++++++++++++++++++------
+config.js       | 50 ++++++++++++++++++++++++++++++-
+ index.js        | 91 +++++++++++++++++++++++++++++++++++++++++++++++++++++----
  prompt.js       |  2 +-
- state.js        | 61 ++++++++++++++++++++++++++++++++++++++++++++++++++++-----
- tools/dlmm.js   | 33 +++++++++++++++----------------
- tools/wallet.js | 50 ++++++++++++++++++++++++++++++++++++----------
- 6 files changed, 183 insertions(+), 40 deletions(-)
+ state.js        | 61 ++++++++++++++++++++++++++++++++++----
+ tools/dlmm.js   | 33 ++++++++++-----------
+ tools/wallet.js | 50 ++++++++++++++++++++++++-------
+ 6 files changed, 247 insertions(+), 40 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..906ad56 100644
@@ -82,7 +82,7 @@ index 73c7c86..906ad56 100644
      deployAmountSol:       u.deployAmountSol       ?? 0.5,
      gasReserve:            u.gasReserve            ?? 0.2,
 diff --git a/index.js b/index.js
-index 51cc831..a53aebd 100644
+index 51cc831..397db68 100644
 --- a/index.js
 +++ b/index.js
 @@ -25,7 +25,7 @@ import {
@@ -94,7 +94,15 @@ index 51cc831..a53aebd 100644
  import { getActiveStrategy } from "./strategy-library.js";
  import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
  import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-@@ -189,7 +189,7 @@ async function maybeRunMissedBriefing() {
+@@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
+ import { getWeightsSummary } from "./signal-weights.js";
+ import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
+ import { appendDecision } from "./decision-log.js";
++import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
+ 
+ import { REPO_ROOT, repoPath } from "./repo-root.js";
+ 
+@@ -189,7 +190,7 @@ async function maybeRunMissedBriefing() {
  
    // Only fire if it's past the scheduled time (1:00 AM UTC)
    const nowUtc = new Date();
@@ -103,7 +111,7 @@ index 51cc831..a53aebd 100644
    if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
  
    log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
-@@ -245,7 +245,8 @@ export async function runManagementCycle({ silent = false } = {}) {
+@@ -245,7 +246,8 @@ export async function runManagementCycle({ silent = false } = {}) {
        const exit = updatePnlAndCheckExits(p.position, p, config.management);
        if (exit) {
          if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
@@ -113,7 +121,7 @@ index 51cc831..a53aebd 100644
              scheduleTrailingDropConfirmation(p.position);
            }
            continue;
-@@ -731,8 +732,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+@@ -731,8 +733,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
      }
    });
  
@@ -124,7 +132,24 @@ index 51cc831..a53aebd 100644
      await runBriefing();
    }, { timezone: 'UTC' });
  
-@@ -763,7 +764,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+@@ -760,10 +762,25 @@ Summarize the current portfolio health, total fees earned, and performance of al
+         ) {
+           schedulePeakConfirmation(p.position);
+         }
++        // ── Indicator-based exit (TP at peak on reversal signal) ───
++        if (config.indicators?.enabled && (p.pnl_pct ?? 0) > 0) {
++          const indicatorExit = await checkIndicatorExit(p).catch(() => null);
++          if (indicatorExit?.shouldExit) {
++            const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
++            const sinceLastTrigger = Date.now() - _pollTriggeredAt;
++            if (sinceLastTrigger >= cooldownMs) {
++              _pollTriggeredAt = Date.now();
++              log("state", `[PnL poll] Indicator exit: ${p.pair} — ${indicatorExit.reason} (PnL ${p.pnl_pct.toFixed(2)}%) — triggering management`);
++              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
++            }
++            break;
++          }
++        }
          const exit = updatePnlAndCheckExits(p.position, p, config.management);
          if (exit) {
            if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
@@ -134,7 +159,7 @@ index 51cc831..a53aebd 100644
                scheduleTrailingDropConfirmation(p.position);
              }
              continue;
-@@ -792,6 +794,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
+@@ -792,6 +809,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
            }
            break;
          }
@@ -154,6 +179,62 @@ index 51cc831..a53aebd 100644
        }
      } finally {
        _pnlPollBusy = false;
+@@ -821,6 +851,55 @@ function withTimeout(promise, ms) {
+   });
+ }
+ 
++// ── Indicator-based exit (TP at peak on reversal) ─────────────────
++// Rate-limited: check at most once per 60s per position to avoid API spam
++const _indicatorCheckCache = new Map(); // position_address -> { result, ts }
++async function checkIndicatorExit(position) {
++  const cacheKey = position.position;
++  const now = Date.now();
++  const cached = _indicatorCheckCache.get(cacheKey);
++  if (cached && now - cached.ts < 60_000) {
++    return cached.result;
++  }
++  try {
++    const baseMint = position.base_mint;
++    if (!baseMint) return { shouldExit: false, reason: "no base_mint" };
++    const payload = await agentMeridianJson(
++      `/chart-indicators/${baseMint}?interval=5_MINUTE&candles=50&rsiLength=2`,
++      { headers: getAgentMeridianHeaders() }
++    );
++    const latest = payload?.latest || {};
++    const candle = latest?.candle || {};
++    const rsi = latest?.rsi?.value;
++    const st = latest?.supertrend || {};
++    const isBearish = st.direction === "bearish";
++    const supertrendBreakDown = !!latest?.states?.supertrendBreakDown;
++    const close = Number(candle.close);
++    const supertrendValue = Number(st.value);
++    const rsiOverbought = Number(config.indicators.rsiOverbought ?? 80);
++    const result = {
++      shouldExit: false,
++      reason: "",
++      signal: { rsi, supertrendDirection: st.direction, close, supertrendValue },
++    };
++    // Exit if Supertrend flipped bearish OR price broke below Supertrend
++    if (supertrendBreakDown) {
++      result.shouldExit = true;
++      result.reason = `Supertrend flipped bearish (close ${close} < ST ${supertrendValue})`;
++    } else if (isBearish && Number.isFinite(close) && Number.isFinite(supertrendValue) && close < supertrendValue) {
++      result.shouldExit = true;
++      result.reason = `Price below bearish Supertrend (close ${close} < ST ${supertrendValue})`;
++    } else if (rsi != null && rsi >= rsiOverbought) {
++      result.shouldExit = true;
++      result.reason = `RSI overbought (${rsi} >= ${rsiOverbought})`;
++    }
++    _indicatorCheckCache.set(cacheKey, { result, ts: now });
++    return result;
++  } catch (e) {
++    return { shouldExit: false, reason: `indicator error: ${e.message}` };
++  }
++}
++
+ async function shutdown(signal) {
+   if (_shuttingDown) {
+     log("shutdown", `Received ${signal} while shutdown is already in progress.`);
 diff --git a/prompt.js b/prompt.js
 index 7379239..ff28fba 100644
 --- a/prompt.js
@@ -486,20 +567,25 @@ index.js
    import { getActiveStrategy } from "./strategy-library.js";
    import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
    import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-  @@ -189,7 +189,7 @@ async function maybeRunMissedBriefing() {
+  @@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
+  +import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
+   
+   import { REPO_ROOT, repoPath } from "./repo-root.js";
+   
+  @@ -189,7 +190,7 @@ async function maybeRunMissedBriefing() {
   -  const briefingHourUtc = 1;
   +  const briefingHourUtc = 2;
      if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
    
      log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
-  @@ -245,7 +245,8 @@ export async function runManagementCycle({ silent = false } = {}) {
+  @@ -245,7 +246,8 @@ export async function runManagementCycle({ silent = false } = {}) {
   -          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
   +          const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
   +          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
                scheduleTrailingDropConfirmation(p.position);
              }
              continue;
-  @@ -731,8 +732,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  @@ -731,8 +733,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
   -  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
   -  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
   +  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
@@ -507,14 +593,31 @@ index.js
        await runBriefing();
      }, { timezone: 'UTC' });
    
-  @@ -763,7 +764,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  @@ -760,10 +762,25 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  +        // ── Indicator-based exit (TP at peak on reversal signal) ───
+  +        if (config.indicators?.enabled && (p.pnl_pct ?? 0) > 0) {
+  +          const indicatorExit = await checkIndicatorExit(p).catch(() => null);
+  +          if (indicatorExit?.shouldExit) {
+  +            const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+  +            const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+  +            if (sinceLastTrigger >= cooldownMs) {
+  +              _pollTriggeredAt = Date.now();
+  +              log("state", `[PnL poll] Indicator exit: ${p.pair} — ${indicatorExit.reason} (PnL ${p.pnl_pct.toFixed(2)}%) — triggering management`);
+  +              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+  +            }
+  +            break;
+  +          }
+  +        }
+           const exit = updatePnlAndCheckExits(p.position, p, config.management);
+           if (exit) {
+             if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
   -            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
   +            const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
   +            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
                  scheduleTrailingDropConfirmation(p.position);
                }
                continue;
-  @@ -792,6 +794,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
+  @@ -792,6 +809,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
   +        const decayCheck = checkYieldDecay(p.position, p, config.management);
   +        if (decayCheck) {
   +          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
@@ -531,7 +634,60 @@ index.js
          }
        } finally {
          _pnlPollBusy = false;
-  +21 -6
+  @@ -821,6 +851,55 @@ function withTimeout(promise, ms) {
+  +// ── Indicator-based exit (TP at peak on reversal) ─────────────────
+  +// Rate-limited: check at most once per 60s per position to avoid API spam
+  +const _indicatorCheckCache = new Map(); // position_address -> { result, ts }
+  +async function checkIndicatorExit(position) {
+  +  const cacheKey = position.position;
+  +  const now = Date.now();
+  +  const cached = _indicatorCheckCache.get(cacheKey);
+  +  if (cached && now - cached.ts < 60_000) {
+  +    return cached.result;
+  +  }
+  +  try {
+  +    const baseMint = position.base_mint;
+  +    if (!baseMint) return { shouldExit: false, reason: "no base_mint" };
+  +    const payload = await agentMeridianJson(
+  +      `/chart-indicators/${baseMint}?interval=5_MINUTE&candles=50&rsiLength=2`,
+  +      { headers: getAgentMeridianHeaders() }
+  +    );
+  +    const latest = payload?.latest || {};
+  +    const candle = latest?.candle || {};
+  +    const rsi = latest?.rsi?.value;
+  +    const st = latest?.supertrend || {};
+  +    const isBearish = st.direction === "bearish";
+  +    const supertrendBreakDown = !!latest?.states?.supertrendBreakDown;
+  +    const close = Number(candle.close);
+  +    const supertrendValue = Number(st.value);
+  +    const rsiOverbought = Number(config.indicators.rsiOverbought ?? 80);
+  +    const result = {
+  +      shouldExit: false,
+  +      reason: "",
+  +      signal: { rsi, supertrendDirection: st.direction, close, supertrendValue },
+  +    };
+  +    // Exit if Supertrend flipped bearish OR price broke below Supertrend
+  +    if (supertrendBreakDown) {
+  +      result.shouldExit = true;
+  +      result.reason = `Supertrend flipped bearish (close ${close} < ST ${supertrendValue})`;
+  +    } else if (isBearish && Number.isFinite(close) && Number.isFinite(supertrendValue) && close < supertrendValue) {
+  +      result.shouldExit = true;
+  +      result.reason = `Price below bearish Supertrend (close ${close} < ST ${supertrendValue})`;
+  +    } else if (rsi != null && rsi >= rsiOverbought) {
+  +      result.shouldExit = true;
+  +      result.reason = `RSI overbought (${rsi} >= ${rsiOverbought})`;
+  +    }
+  +    _indicatorCheckCache.set(cacheKey, { result, ts: now });
+  +    return result;
+  +  } catch (e) {
+  +    return { shouldExit: false, reason: `indicator error: ${e.message}` };
+  +  }
+  +}
+  +
+   async function shutdown(signal) {
+     if (_shuttingDown) {
+       log("shutdown", `Received ${signal} while shutdown is already in progress.`);
+  +85 -6
 
 prompt.js
   @@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
