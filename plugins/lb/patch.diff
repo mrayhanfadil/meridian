@@ -1,10 +1,11 @@
-config.js       | 50 ++++++++++++++++++++++++++++++-
- index.js        | 91 +++++++++++++++++++++++++++++++++++++++++++++++++++++----
- prompt.js       |  2 +-
- state.js        | 61 ++++++++++++++++++++++++++++++++++----
- tools/dlmm.js   | 33 ++++++++++-----------
- tools/wallet.js | 50 ++++++++++++++++++++++++-------
- 6 files changed, 247 insertions(+), 40 deletions(-)
+config.js         | 50 +++++++++++++++++++++++++++++-
+ index.js          | 91 +++++++++++++++++++++++++++++++++++++++++++++++++++----
+ prompt.js         |  2 +-
+ state.js          | 61 ++++++++++++++++++++++++++++++++++---
+ tools/dlmm.js     | 33 ++++++++++----------
+ tools/executor.js | 35 +++++++++++++++++++--
+ tools/wallet.js   | 50 ++++++++++++++++++++++++------
+ 7 files changed, 279 insertions(+), 43 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..906ad56 100644
@@ -413,6 +414,66 @@ index f1fb130..34fc0a7 100644
          base_mint: closeBaseMint,
        };
      }
+diff --git a/tools/executor.js b/tools/executor.js
+index 8196dae..9ed0d23 100644
+--- a/tools/executor.js
++++ b/tools/executor.js
+@@ -12,7 +12,7 @@ import {
+ import { getWalletBalances, swapToken } from "./wallet.js";
+ import { studyTopLPers } from "./study.js";
+ import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
+-import { setPositionInstruction } from "../state.js";
++import { setPositionInstruction, getTrackedPosition } from "../state.js";
+ 
+ import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+ import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
+@@ -629,7 +629,30 @@ export async function executeTool(name, args) {
+       } else if (name === "deploy_position") {
+         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+       } else if (name === "close_position") {
+-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
++        const hasTruePnl = result.pnl_true_usd != null;
++        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
++        // Compute true USD percentage — use final_value_usd from Meteora if available
++        // since initial_value_usd is sometimes stored as SOL amount instead of USD
++        let realPnlPct = result.pnl_pct ?? 0;
++        if (hasTruePnl && result.pnl_true_usd != null) {
++          const tracked = getTrackedPosition(result.position || args.position_address);
++          // Try multiple sources for the initial USD value, in order of reliability
++          let initialUsd = 0;
++          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
++            // Looks like a real USD value (>10 means it's not just the SOL amount)
++            initialUsd = tracked.initial_value_usd;
++          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
++            initialUsd = result.initial_value_usd;
++          } else if (result.deposited_usd) {
++            initialUsd = result.deposited_usd;
++          } else if (tracked?.amount_sol) {
++            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
++            initialUsd = tracked.amount_sol * 73;
++          }
++          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
++        }
++        const pnlUnit = hasTruePnl ? "$" : "◎";
++        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
+         // Note low-yield closes in pool memory so screener avoids redeploying
+         if (args.reason && args.reason.toLowerCase().includes("yield")) {
+           const poolAddr = result.pool || args.pool_address;
+@@ -715,7 +738,13 @@ async function runSafetyChecks(name, args) {
+         };
+       }
+       const requestedBinsBelow = Number(args.bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow);
+-      const requestedBinsAbove = Number(args.bins_above ?? 0);
++      // Auto-fill bins_above for spot strategy: symmetric range (max 8 = ~8% upside)
++      // The LLM consistently passes bins_above=0 despite prompt instructions, so we force it
++      let requestedBinsAbove = Number(args.bins_above ?? 0);
++      if (requestedBinsAbove === 0 && (args.strategy ?? config.strategy.strategy) === "spot" && requestedBinsBelow > 0) {
++        requestedBinsAbove = Math.max(8, Math.round(requestedBinsBelow / 3));
++        log("deploy", `Auto-setting bins_above=${requestedBinsAbove} for spot strategy (LLM passed 0)`);
++      }
+       const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
+       const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
+       const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -839,6 +900,56 @@ tools/dlmm.js
          };
        }
   +16 -17
+
+tools/executor.js
+  @@ -12,7 +12,7 @@ import {
+  -import { setPositionInstruction } from "../state.js";
+  +import { setPositionInstruction, getTrackedPosition } from "../state.js";
+   
+   import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+   import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
+  @@ -629,7 +629,30 @@ export async function executeTool(name, args) {
+  -        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+  +        const hasTruePnl = result.pnl_true_usd != null;
+  +        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
+  +        // Compute true USD percentage — use final_value_usd from Meteora if available
+  +        // since initial_value_usd is sometimes stored as SOL amount instead of USD
+  +        let realPnlPct = result.pnl_pct ?? 0;
+  +        if (hasTruePnl && result.pnl_true_usd != null) {
+  +          const tracked = getTrackedPosition(result.position || args.position_address);
+  +          // Try multiple sources for the initial USD value, in order of reliability
+  +          let initialUsd = 0;
+  +          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
+  +            // Looks like a real USD value (>10 means it's not just the SOL amount)
+  +            initialUsd = tracked.initial_value_usd;
+  +          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
+  +            initialUsd = result.initial_value_usd;
+  +          } else if (result.deposited_usd) {
+  +            initialUsd = result.deposited_usd;
+  +          } else if (tracked?.amount_sol) {
+  +            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
+  +            initialUsd = tracked.amount_sol * 73;
+  +          }
+  +          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
+  +        }
+  +        const pnlUnit = hasTruePnl ? "$" : "◎";
+  +        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
+           // Note low-yield closes in pool memory so screener avoids redeploying
+           if (args.reason && args.reason.toLowerCase().includes("yield")) {
+             const poolAddr = result.pool || args.pool_address;
+  @@ -715,7 +738,13 @@ async function runSafetyChecks(name, args) {
+  -      const requestedBinsAbove = Number(args.bins_above ?? 0);
+  +      // Auto-fill bins_above for spot strategy: symmetric range (max 8 = ~8% upside)
+  +      // The LLM consistently passes bins_above=0 despite prompt instructions, so we force it
+  +      let requestedBinsAbove = Number(args.bins_above ?? 0);
+  +      if (requestedBinsAbove === 0 && (args.strategy ?? config.strategy.strategy) === "spot" && requestedBinsBelow > 0) {
+  +        requestedBinsAbove = Math.max(8, Math.round(requestedBinsBelow / 3));
+  +        log("deploy", `Auto-setting bins_above=${requestedBinsAbove} for spot strategy (LLM passed 0)`);
+  +      }
+         const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
+         const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
+         const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
+  +32 -3
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
