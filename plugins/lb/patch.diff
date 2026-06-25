@@ -1,11 +1,11 @@
 config.js         | 50 +++++++++++++++++++++++++++++-
  index.js          | 93 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
- prompt.js         |  2 +-
+ prompt.js         |  3 +-
  state.js          | 61 +++++++++++++++++++++++++++++++++---
- tools/dlmm.js     | 33 ++++++++++----------
- tools/executor.js | 39 ++++++++++++++++++++---
+ tools/dlmm.js     | 18 ++++++++---
+ tools/executor.js | 27 ++++++++++++++--
  tools/wallet.js   | 50 ++++++++++++++++++++++++------
- 7 files changed, 282 insertions(+), 46 deletions(-)
+ 7 files changed, 272 insertions(+), 30 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..906ad56 100644
@@ -83,7 +83,7 @@ index 73c7c86..906ad56 100644
      deployAmountSol:       u.deployAmountSol       ?? 0.5,
      gasReserve:            u.gasReserve            ?? 0.2,
 diff --git a/index.js b/index.js
-index 51cc831..c21aa4e 100644
+index 51cc831..0f5d9c0 100644
 --- a/index.js
 +++ b/index.js
 @@ -25,7 +25,7 @@ import {
@@ -127,7 +127,7 @@ index 51cc831..c21aa4e 100644
      const activeStrategy = getActiveStrategy();
      const deployStrategy = config.strategy.strategy;
 -    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-+    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: max(8, round(bins_below / 3)) for spot strategy (AUTO-FILLED in executor if LLM passes 0) | deposit: SOL only (amount_y, amount_x=0)`
++    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (single-side SOL, upstream default) | deposit: SOL only (amount_y, amount_x=0)`
        + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
  
      // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
@@ -246,15 +246,16 @@ index 51cc831..c21aa4e 100644
    if (_shuttingDown) {
      log("shutdown", `Received ${signal} while shutdown is already in progress.`);
 diff --git a/prompt.js b/prompt.js
-index 7379239..ff28fba 100644
+index 7379239..8967cbe 100644
 --- a/prompt.js
 +++ b/prompt.js
-@@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
+@@ -121,7 +121,8 @@ POOL MEMORY: Past losses or problems → strong skip signal.
  DEPLOY RULES:
  - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
  - bins_below = round(config.strategy.minBinsBelow + (candidate volatility/5)*(config.strategy.maxBinsBelow-config.strategy.minBinsBelow)) clamped to [minBinsBelow,maxBinsBelow]. Volatility must be a positive number; 0/unknown means skip.
 -- Use amount_y only, keep amount_x=0 and bins_above=0.
-+- For strategy "spot": keep amount_x=0 and set bins_above = max(8, round(bins_below / 3)) for symmetric range. For strategy "bid_ask": keep amount_x=0 and bins_above=0.
++- For strategy "spot": keep amount_x=0 and bins_above=0 (single-side SOL LP, upstream default).
++- For strategy "bid_ask": keep amount_x=0 and bins_above=0.
  - Bin steps must be [80-125].
  - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
  
@@ -346,7 +347,7 @@ index ce8822a..39a49b2 100644
  
  /**
 diff --git a/tools/dlmm.js b/tools/dlmm.js
-index f1fb130..34fc0a7 100644
+index f1fb130..5cf44a7 100644
 --- a/tools/dlmm.js
 +++ b/tools/dlmm.js
 @@ -80,11 +80,19 @@ async function getDLMM() {
@@ -372,42 +373,16 @@ index f1fb130..34fc0a7 100644
  }
  
  function getWallet() {
-@@ -549,14 +557,8 @@ export async function deployPosition({
-     throw new Error("Invalid deploy amount: provide a positive amount_y/amount_sol.");
-   }
+@@ -551,7 +559,7 @@ export async function deployPosition({
    const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
--  if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
--    throw new Error(
+   if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
+     throw new Error(
 -      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
--    );
--  }
--  if (isSingleSidedSol) {
--    activeBinsAbove = 0;
--  }
-+  // Allow bins_above > 0 for single-sided SOL — upper bins will be empty (no token X)
-+  // but the position range extends above active bin, providing OOR protection on upside.
-   activeBinsBelow = Number(activeBinsBelow);
-   activeBinsAbove = Number(activeBinsAbove);
-   if (!Number.isFinite(activeBinsBelow) || !Number.isFinite(activeBinsAbove)) {
-@@ -596,16 +598,11 @@ export async function deployPosition({
- 
-   const isWideRange = totalBins > 69;
-   const minBinId = activeBin.binId - activeBinsBelow;
--  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
-+  const maxBinId = activeBin.binId + activeBinsAbove;
- 
-   if (minBinId > maxBinId) {
-     throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
++      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin will be pinned to the current active bin.",
+     );
    }
--  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
--    throw new Error(
--      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
--    );
--  }
- 
-   await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
- 
-@@ -1719,6 +1716,7 @@ export async function closePosition({ position_address, reason }) {
+   if (isSingleSidedSol) {
+@@ -1719,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
            txs: txHashes,
            pnl_usd: pnlUsd,
            pnl_pct: pnlPct,
@@ -415,7 +390,7 @@ index f1fb130..34fc0a7 100644
            base_mint: closeBaseMint,
          };
        }
-@@ -2022,6 +2020,7 @@ export async function closePosition({ position_address, reason }) {
+@@ -2022,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
          txs: txHashes,
          pnl_usd: pnlUsd,
          pnl_pct: pnlPct,
@@ -424,7 +399,7 @@ index f1fb130..34fc0a7 100644
        };
      }
 diff --git a/tools/executor.js b/tools/executor.js
-index 8196dae..eaeaa71 100644
+index 8196dae..a9299fe 100644
 --- a/tools/executor.js
 +++ b/tools/executor.js
 @@ -12,7 +12,7 @@ import {
@@ -468,35 +443,6 @@ index 8196dae..eaeaa71 100644
          // Note low-yield closes in pool memory so screener avoids redeploying
          if (args.reason && args.reason.toLowerCase().includes("yield")) {
            const poolAddr = result.pool || args.pool_address;
-@@ -715,7 +738,13 @@ async function runSafetyChecks(name, args) {
-         };
-       }
-       const requestedBinsBelow = Number(args.bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow);
--      const requestedBinsAbove = Number(args.bins_above ?? 0);
-+      // Auto-fill bins_above for spot strategy: symmetric range (max 8 = ~8% upside)
-+      // The LLM consistently passes bins_above=0 despite prompt instructions, so we force it
-+      let requestedBinsAbove = Number(args.bins_above ?? 0);
-+      if (requestedBinsAbove === 0 && (args.strategy ?? config.strategy.strategy) === "spot" && requestedBinsBelow > 0) {
-+        requestedBinsAbove = Math.max(8, Math.round(requestedBinsBelow / 3));
-+        log("deploy", `Auto-setting bins_above=${requestedBinsAbove} for spot strategy (LLM passed 0)`);
-+      }
-       const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
-       const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
-       const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
-@@ -757,11 +786,11 @@ async function runSafetyChecks(name, args) {
-       if (
-         isSingleSidedSol &&
-         args.upside_pct == null &&
--        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
-+        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove < 0)
-       ) {
-         return {
-           pass: false,
--          reason: "Single-side SOL deploy must use bins_above=0.",
-+          reason: "Single-side SOL deploy requires bins_above to be a non-negative integer (0 is allowed but executor auto-fills >0 for spot strategy).",
-         };
-       }
- 
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -671,7 +617,7 @@ index.js
              continue;
   @@ -442,7 +444,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   -    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-  +    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: max(8, round(bins_below / 3)) for spot strategy (AUTO-FILLED in executor if LLM passes 0) | deposit: SOL only (amount_y, amount_x=0)`
+  +    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (single-side SOL, upstream default) | deposit: SOL only (amount_y, amount_x=0)`
          + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
    
        // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
@@ -780,13 +726,14 @@ index.js
   +86 -7
 
 prompt.js
-  @@ -121,7 +121,7 @@ POOL MEMORY: Past losses or problems → strong skip signal.
+  @@ -121,7 +121,8 @@ POOL MEMORY: Past losses or problems → strong skip signal.
   -- Use amount_y only, keep amount_x=0 and bins_above=0.
-  +- For strategy "spot": keep amount_x=0 and set bins_above = max(8, round(bins_below / 3)) for symmetric range. For strategy "bid_ask": keep amount_x=0 and bins_above=0.
+  +- For strategy "spot": keep amount_x=0 and bins_above=0 (single-side SOL LP, upstream default).
+  +- For strategy "bid_ask": keep amount_x=0 and bins_above=0.
    - Bin steps must be [80-125].
    - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
    
-  +1 -1
+  +2 -1
 
 state.js
   @@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
@@ -889,46 +836,23 @@ tools/dlmm.js
    }
    
    function getWallet() {
-  @@ -549,14 +557,8 @@ export async function deployPosition({
-  -  if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
-  -    throw new Error(
+  @@ -551,7 +559,7 @@ export async function deployPosition({
   -      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
-  -    );
-  -  }
-  -  if (isSingleSidedSol) {
-  -    activeBinsAbove = 0;
-  -  }
-  +  // Allow bins_above > 0 for single-sided SOL — upper bins will be empty (no token X)
-  +  // but the position range extends above active bin, providing OOR protection on upside.
-     activeBinsBelow = Number(activeBinsBelow);
-     activeBinsAbove = Number(activeBinsAbove);
-     if (!Number.isFinite(activeBinsBelow) || !Number.isFinite(activeBinsAbove)) {
-  @@ -596,16 +598,11 @@ export async function deployPosition({
-  -  const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
-  +  const maxBinId = activeBin.binId + activeBinsAbove;
-   
-     if (minBinId > maxBinId) {
-       throw new Error(`Invalid bin range: ${minBinId} -> ${maxBinId}`);
+  +      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin will be pinned to the current active bin.",
+       );
      }
-  -  if (isSingleSidedSol && maxBinId !== activeBin.binId) {
-  -    throw new Error(
-  -      `Single-side SOL deploy must end at the SDK active bin. Expected ${activeBin.binId}, got ${maxBinId}.`,
-  -    );
-  -  }
-   
-     await assertRangeDoesNotRequireBinArrayInitialization(pool, minBinId, maxBinId);
-   
-  @@ -1719,6 +1716,7 @@ export async function closePosition({ position_address, reason }) {
+     if (isSingleSidedSol) {
+  @@ -1719,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
   +          pnl_true_usd: pnlTrueUsd,
              base_mint: closeBaseMint,
            };
          }
-  @@ -2022,6 +2020,7 @@ export async function closePosition({ position_address, reason }) {
+  @@ -2022,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
   +        pnl_true_usd: pnlTrueUsd,
            base_mint: closeBaseMint,
          };
        }
-  +16 -17
+  +14 -4
 
 tools/executor.js
   @@ -12,7 +12,7 @@ import {
@@ -966,30 +890,7 @@ tools/executor.js
            // Note low-yield closes in pool memory so screener avoids redeploying
            if (args.reason && args.reason.toLowerCase().includes("yield")) {
              const poolAddr = result.pool || args.pool_address;
-  @@ -715,7 +738,13 @@ async function runSafetyChecks(name, args) {
-  -      const requestedBinsAbove = Number(args.bins_above ?? 0);
-  +      // Auto-fill bins_above for spot strategy: symmetric range (max 8 = ~8% upside)
-  +      // The LLM consistently passes bins_above=0 despite prompt instructions, so we force it
-  +      let requestedBinsAbove = Number(args.bins_above ?? 0);
-  +      if (requestedBinsAbove === 0 && (args.strategy ?? config.strategy.strategy) === "spot" && requestedBinsBelow > 0) {
-  +        requestedBinsAbove = Math.max(8, Math.round(requestedBinsBelow / 3));
-  +        log("deploy", `Auto-setting bins_above=${requestedBinsAbove} for spot strategy (LLM passed 0)`);
-  +      }
-         const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
-         const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
-         const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
-  @@ -757,11 +786,11 @@ async function runSafetyChecks(name, args) {
-  -        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
-  +        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove < 0)
-         ) {
-           return {
-             pass: false,
-  -          reason: "Single-side SOL deploy must use bins_above=0.",
-  +          reason: "Single-side SOL deploy requires bins_above to be a non-negative integer (0 is allowed but executor auto-fills >0 for spot strategy).",
-           };
-         }
-   
-  +34 -5
+  +25 -2
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
