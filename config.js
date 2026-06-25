@@ -257,6 +257,14 @@ export const config = {
     feeSource: nonEmptyString(gmgnUserConfig.feeSource, u.gmgnFeeSource, "gmgn"),
   },
 
+  // ─── Opportunity poller (catches strong pools between screening cycles) ──
+  opportunity: {
+    enabled: u.opportunity?.enabled ?? true,
+    pollIntervalSec: u.opportunity?.pollIntervalSec ?? 45,
+    minDegenScore: u.opportunity?.minDegenScore ?? 30,
+    maxPoolsPerPoll: u.opportunity?.maxPoolsPerPoll ?? 3,
+  },
+
   jupiter: {
     // Internal Jupiter Ultra settings; override by env only, do not expose in user-config.
     apiKey: process.env.JUPITER_API_KEY ?? "",
