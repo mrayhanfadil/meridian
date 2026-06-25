@@ -47,6 +47,3 @@ discord-signals.json
 
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
-
-# Hermes-agent pre-patch backups (not for git — use plugins/lb/patch.diff)
-.hermes-backup/

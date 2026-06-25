@@ -1,14 +1,10 @@
-config.js         | 50 +++++++++++++++++++++++++++++-
- index.js          | 93 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
- prompt.js         |  3 +-
- state.js          | 61 +++++++++++++++++++++++++++++++++---
- tools/dlmm.js     | 18 ++++++++---
- tools/executor.js | 27 ++++++++++++++--
- tools/wallet.js   | 50 ++++++++++++++++++++++++------
- 7 files changed, 272 insertions(+), 30 deletions(-)
+config.js       | 75 +++++++++++++++++++++++++++++++++++++--------------------
+ tools/dlmm.js   | 29 ++++++++++++----------
+ tools/wallet.js | 50 ++++++++++++++++++++++++++++++--------
+ 3 files changed, 105 insertions(+), 49 deletions(-)
 
 diff --git a/config.js b/config.js
-index 73c7c86..906ad56 100644
+index adf5eaf..906ad56 100644
 --- a/config.js
 +++ b/config.js
 @@ -13,7 +13,7 @@ const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
@@ -74,7 +70,24 @@ index 73c7c86..906ad56 100644
  function nonEmptyString(...values) {
    for (const value of values) {
      if (typeof value !== "string") continue;
-@@ -117,6 +164,7 @@ export const config = {
+@@ -93,7 +140,6 @@ export const config = {
+     blockPvpSymbols:   u.blockPvpSymbols   ?? false, // hard-filter PVP rivals before the LLM sees them
+     maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
+     maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
+-    loneCandidateMinDegen: u.loneCandidateMinDegen ?? 50, // degen score that lets a SOLO candidate deploy without a narrative
+     allowedLaunchpads: u.allowedLaunchpads ?? [],  // allow-list launchpads, [] = no allow-list
+     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
+     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
+@@ -104,8 +150,6 @@ export const config = {
+   management: {
+     minClaimAmount:        u.minClaimAmount        ?? 5,
+     autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
+-    autoSwapRetryAttempts: u.autoSwapRetryAttempts ?? 3,    // retries for base→SOL auto-swap on Jupiter failure
+-    autoSwapRetryDelayMs:  u.autoSwapRetryDelayMs  ?? 3000, // delay between auto-swap retries
+     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
+     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
+     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
+@@ -120,6 +164,7 @@ export const config = {
      takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
      minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
      minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
@@ -82,272 +95,37 @@ index 73c7c86..906ad56 100644
      minSolToOpen:          u.minSolToOpen          ?? 0.55,
      deployAmountSol:       u.deployAmountSol       ?? 0.5,
      gasReserve:            u.gasReserve            ?? 0.2,
-diff --git a/index.js b/index.js
-index 51cc831..0f5d9c0 100644
---- a/index.js
-+++ b/index.js
-@@ -25,7 +25,7 @@ import {
-   createLiveMessage,
- } from "./telegram.js";
- import { generateBriefing } from "./briefing.js";
--import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
-+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
- import { getActiveStrategy } from "./strategy-library.js";
- import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
- import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-@@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
- import { getWeightsSummary } from "./signal-weights.js";
- import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
- import { appendDecision } from "./decision-log.js";
-+import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
+@@ -200,28 +245,6 @@ export const config = {
+     source: nonEmptyString(u.pnlSource, "rpc"), // rpc | meteora (fallback-only)
+     pollIntervalSec: Number(u.pnlPollIntervalSec ?? 3),
+     depositCacheTtlSec: Number(u.pnlDepositCacheTtlSec ?? 300),
+-    // Consecutive confirming polls required before a peak is raised or an exit fires.
+-    // At a 3s poll cadence, 2 ticks ≈ 3-6s — filters single-tick noise without the
+-    // old fixed 15s setTimeout recheck.
+-    confirmTicks: Number(u.pnlConfirmTicks ?? 2),
+-  },
+-
+-  // ─── Opportunity poller (catches strong pools between screening cycles) ──
+-  opportunity: {
+-    enabled: u.opportunityPollEnabled ?? true,
+-    pollIntervalSec: Number(u.opportunityPollIntervalSec ?? 45),
+-    limit: Number(u.opportunityPollLimit ?? 10),
+-    // Pre-gate: only trigger the full deploy decision when the best candidate's
+-    // Degen Score (0..100) clears this bar — avoids running screening every 45s.
+-    minScore: Number(u.opportunityMinScore ?? 40),
+-    // A smart wallet (from the agentmeridian server) sitting on the pool LOWERS the
+-    // effective minScore by this much — a strong signal nudges a borderline pool through.
+-    smartWalletScoreBonus: Number(u.opportunitySmartWalletBonus ?? 20),
+-    // Degen Score targets (each sub-score saturates at its target). Tune to calibrate.
+-    targetVolRatio: Number(u.degenTargetVolRatio ?? 500),    // volume/active_tvl for full trading sub-score
+-    targetLpCount: Number(u.degenTargetLpCount ?? 150),      // unique_lps + positions_created for full LP sub-score
+-    targetFeeRatio: Number(u.degenTargetFeeRatio ?? 1.0),    // fee/active_tvl for full fee sub-score
+-    targetLiquidity: Number(u.degenTargetLiquidity ?? 50000), // active_tvl ($) for full liquidity sub-score
+   },
  
- import { REPO_ROOT, repoPath } from "./repo-root.js";
- 
-@@ -189,7 +190,7 @@ async function maybeRunMissedBriefing() {
- 
-   // Only fire if it's past the scheduled time (1:00 AM UTC)
-   const nowUtc = new Date();
--  const briefingHourUtc = 1;
-+  const briefingHourUtc = 2;
-   if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
- 
-   log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
-@@ -245,7 +246,8 @@ export async function runManagementCycle({ silent = false } = {}) {
-       const exit = updatePnlAndCheckExits(p.position, p, config.management);
-       if (exit) {
-         if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
--          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
-+          const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
-+          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
-             scheduleTrailingDropConfirmation(p.position);
-           }
-           continue;
-@@ -442,7 +444,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
-     // Load active strategy
-     const activeStrategy = getActiveStrategy();
-     const deployStrategy = config.strategy.strategy;
--    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-+    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (single-side SOL, upstream default) | deposit: SOL only (amount_y, amount_x=0)`
-       + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
- 
-     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
-@@ -731,8 +733,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
-     }
-   });
- 
--  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
--  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
-+  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
-+  const briefingTask = cron.schedule(`0 2 * * *`, async () => {
-     await runBriefing();
-   }, { timezone: 'UTC' });
- 
-@@ -760,10 +762,25 @@ Summarize the current portfolio health, total fees earned, and performance of al
-         ) {
-           schedulePeakConfirmation(p.position);
-         }
-+        // ── Indicator-based exit (TP at peak on reversal signal) ───
-+        if (config.indicators?.enabled && (p.pnl_pct ?? 0) > 0) {
-+          const indicatorExit = await checkIndicatorExit(p).catch(() => null);
-+          if (indicatorExit?.shouldExit) {
-+            const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-+            const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-+            if (sinceLastTrigger >= cooldownMs) {
-+              _pollTriggeredAt = Date.now();
-+              log("state", `[PnL poll] Indicator exit: ${p.pair} — ${indicatorExit.reason} (PnL ${p.pnl_pct.toFixed(2)}%) — triggering management`);
-+              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-+            }
-+            break;
-+          }
-+        }
-         const exit = updatePnlAndCheckExits(p.position, p, config.management);
-         if (exit) {
-           if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
--            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
-+            const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
-+            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
-               scheduleTrailingDropConfirmation(p.position);
-             }
-             continue;
-@@ -792,6 +809,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
-           }
-           break;
-         }
-+        const decayCheck = checkYieldDecay(p.position, p, config.management);
-+        if (decayCheck) {
-+          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-+          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-+          if (sinceLastTrigger >= cooldownMs) {
-+            _pollTriggeredAt = Date.now();
-+            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — triggering management`);
-+            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-+          } else {
-+            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
-+          }
-+          break;
-+        }
-       }
-     } finally {
-       _pnlPollBusy = false;
-@@ -821,6 +851,55 @@ function withTimeout(promise, ms) {
-   });
- }
- 
-+// ── Indicator-based exit (TP at peak on reversal) ─────────────────
-+// Rate-limited: check at most once per 60s per position to avoid API spam
-+const _indicatorCheckCache = new Map(); // position_address -> { result, ts }
-+async function checkIndicatorExit(position) {
-+  const cacheKey = position.position;
-+  const now = Date.now();
-+  const cached = _indicatorCheckCache.get(cacheKey);
-+  if (cached && now - cached.ts < 60_000) {
-+    return cached.result;
-+  }
-+  try {
-+    const baseMint = position.base_mint;
-+    if (!baseMint) return { shouldExit: false, reason: "no base_mint" };
-+    const payload = await agentMeridianJson(
-+      `/chart-indicators/${baseMint}?interval=5_MINUTE&candles=50&rsiLength=2`,
-+      { headers: getAgentMeridianHeaders() }
-+    );
-+    const latest = payload?.latest || {};
-+    const candle = latest?.candle || {};
-+    const rsi = latest?.rsi?.value;
-+    const st = latest?.supertrend || {};
-+    const isBearish = st.direction === "bearish";
-+    const supertrendBreakDown = !!latest?.states?.supertrendBreakDown;
-+    const close = Number(candle.close);
-+    const supertrendValue = Number(st.value);
-+    const rsiOverbought = Number(config.indicators.rsiOverbought ?? 80);
-+    const result = {
-+      shouldExit: false,
-+      reason: "",
-+      signal: { rsi, supertrendDirection: st.direction, close, supertrendValue },
-+    };
-+    // Exit if Supertrend flipped bearish OR price broke below Supertrend
-+    if (supertrendBreakDown) {
-+      result.shouldExit = true;
-+      result.reason = `Supertrend flipped bearish (close ${close} < ST ${supertrendValue})`;
-+    } else if (isBearish && Number.isFinite(close) && Number.isFinite(supertrendValue) && close < supertrendValue) {
-+      result.shouldExit = true;
-+      result.reason = `Price below bearish Supertrend (close ${close} < ST ${supertrendValue})`;
-+    } else if (rsi != null && rsi >= rsiOverbought) {
-+      result.shouldExit = true;
-+      result.reason = `RSI overbought (${rsi} >= ${rsiOverbought})`;
-+    }
-+    _indicatorCheckCache.set(cacheKey, { result, ts: now });
-+    return result;
-+  } catch (e) {
-+    return { shouldExit: false, reason: `indicator error: ${e.message}` };
-+  }
-+}
-+
- async function shutdown(signal) {
-   if (_shuttingDown) {
-     log("shutdown", `Received ${signal} while shutdown is already in progress.`);
-diff --git a/prompt.js b/prompt.js
-index 7379239..8967cbe 100644
---- a/prompt.js
-+++ b/prompt.js
-@@ -121,7 +121,8 @@ POOL MEMORY: Past losses or problems → strong skip signal.
- DEPLOY RULES:
- - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
- - bins_below = round(config.strategy.minBinsBelow + (candidate volatility/5)*(config.strategy.maxBinsBelow-config.strategy.minBinsBelow)) clamped to [minBinsBelow,maxBinsBelow]. Volatility must be a positive number; 0/unknown means skip.
--- Use amount_y only, keep amount_x=0 and bins_above=0.
-+- For strategy "spot": keep amount_x=0 and bins_above=0 (single-side SOL LP, upstream default).
-+- For strategy "bid_ask": keep amount_x=0 and bins_above=0.
- - Bin steps must be [80-125].
- - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
- 
-diff --git a/state.js b/state.js
-index ce8822a..39a49b2 100644
---- a/state.js
-+++ b/state.js
-@@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
-     };
-   }
- 
--  // ── Trailing TP ────────────────────────────────────────────────
-+  // ── Trailing TP (time-decay) ────────────────────────────────────
-   if (!pnl_pct_suspicious && pos.trailing_active) {
-+    // Time-decay trailing drop: young positions = tight, old positions = wide
-+    let effectiveDropPct = mgmtConfig.trailingDropPct;
-+    if (positionData?.age_minutes != null) {
-+      if (positionData.age_minutes < 30) {
-+        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
-+      } else if (positionData.age_minutes < 90) {
-+        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
-+      } else {
-+        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
-+      }
-+    }
-     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
--    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
-+    if (dropFromPeak >= effectiveDropPct) {
-       return {
-         action: "TRAILING_TP",
--        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
-+        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
-         needs_confirmation: true,
-         peak_pnl_pct: pos.peak_pnl_pct,
-         current_pnl_pct: currentPnlPct,
-         drop_from_peak_pct: dropFromPeak,
--      };
--    }
-+        effective_drop_pct: effectiveDropPct,
-+        };
-+        }
-   }
- 
-   // ── Out of range too long ──────────────────────────────────────
-@@ -470,6 +482,45 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
-   return null;
- }
- 
-+/**
-+ * Check if a position's yield has decayed significantly from deploy.
-+ * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
-+ * @param {string} position_address
-+ * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
-+ * @param {object} mgmtConfig
-+ * Returns { action, reason } or null if no decay detected.
-+ */
-+export function checkYieldDecay(position_address, positionData, mgmtConfig) {
-+  const decayConfig = mgmtConfig.yieldDecayCheck;
-+  if (!decayConfig?.enabled) return null;
-+
-+  const state = load();
-+  const pos = state.positions[position_address];
-+  if (!pos || pos.closed) return null;
-+
-+  const deployYield = pos.signal_snapshot?.fee_tvl_ratio ?? pos.initial_fee_tvl_24h;
-+  const currentYield = positionData.fee_per_tvl_24h;
-+  const ageMinutes = positionData.age_minutes ?? 0;
-+
-+  if (deployYield == null || currentYield == null) return null;
-+  if (ageMinutes < (decayConfig.minAgeMinutes ?? 20)) return null;
-+
-+  const minDeployYield = decayConfig.maxYieldPct ?? 40;
-+  if (deployYield < minDeployYield) return null;  // skip low-yield deploys
-+
-+  const dropPct = ((deployYield - currentYield) / deployYield) * 100;
-+  const minDrop = decayConfig.minDropPct ?? 35;
-+
-+  if (dropPct >= minDrop) {
-+    return {
-+      action: "YIELD_DECAY",
-+      reason: `Yield decay: ${currentYield.toFixed(2)}% (dropped ${dropPct.toFixed(1)}% from deploy ${deployYield.toFixed(2)}%, age: ${ageMinutes}m)`,
-+    };
-+  }
-+
-+  return null;
-+}
-+
- // ─── Briefing Tracking ─────────────────────────────────────────
- 
- /**
+   // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
 diff --git a/tools/dlmm.js b/tools/dlmm.js
-index f1fb130..5cf44a7 100644
+index 1189958..5cf44a7 100644
 --- a/tools/dlmm.js
 +++ b/tools/dlmm.js
 @@ -80,11 +80,19 @@ async function getDLMM() {
@@ -382,7 +160,26 @@ index f1fb130..5cf44a7 100644
      );
    }
    if (isSingleSidedSol) {
-@@ -1719,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
+@@ -1229,16 +1237,9 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
+         const pnlPctDiff = reportedPnlPct != null && derivedPnlPct != null
+           ? Math.abs(reportedPnlPct - derivedPnlPct)
+           : null;
+-        // Gate PnL rules ONLY when the tick is genuinely unpriceable (no real number
+-        // from either method — e.g. missing deposits / data outage). Reported-vs-derived
+-        // divergence is normal noise on volatile pools, so it is logged but NOT gated —
+-        // gating on it froze all exits (stop-loss/trailing/close) and stranded positions.
+-        const pnlPctSuspicious = reportedPnlPct == null && derivedPnlPct == null;
++        const pnlPctSuspicious = pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5);
+         if (pnlPctSuspicious) {
+-          log("positions_warn", `Unpriceable pnl_pct for ${positionAddress.slice(0, 8)}: no valid reported/derived value this tick — PnL rules paused`);
+-        } else if (pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5)) {
+-          // Informational only — does not gate rules.
+-          log("positions_warn", `pnl_pct divergence for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)} (informational)`);
++          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
+         }
+ 
+         positions.push({
+@@ -1726,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
            txs: txHashes,
            pnl_usd: pnlUsd,
            pnl_pct: pnlPct,
@@ -390,7 +187,7 @@ index f1fb130..5cf44a7 100644
            base_mint: closeBaseMint,
          };
        }
-@@ -2022,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
+@@ -2029,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
          txs: txHashes,
          pnl_usd: pnlUsd,
          pnl_pct: pnlPct,
@@ -398,51 +195,6 @@ index f1fb130..5cf44a7 100644
          base_mint: closeBaseMint,
        };
      }
-diff --git a/tools/executor.js b/tools/executor.js
-index 8196dae..a9299fe 100644
---- a/tools/executor.js
-+++ b/tools/executor.js
-@@ -12,7 +12,7 @@ import {
- import { getWalletBalances, swapToken } from "./wallet.js";
- import { studyTopLPers } from "./study.js";
- import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
--import { setPositionInstruction } from "../state.js";
-+import { setPositionInstruction, getTrackedPosition } from "../state.js";
- 
- import { getPoolMemory, addPoolNote } from "../pool-memory.js";
- import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
-@@ -629,7 +629,30 @@ export async function executeTool(name, args) {
-       } else if (name === "deploy_position") {
-         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
-       } else if (name === "close_position") {
--        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
-+        const hasTruePnl = result.pnl_true_usd != null;
-+        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
-+        // Compute true USD percentage — use final_value_usd from Meteora if available
-+        // since initial_value_usd is sometimes stored as SOL amount instead of USD
-+        let realPnlPct = result.pnl_pct ?? 0;
-+        if (hasTruePnl && result.pnl_true_usd != null) {
-+          const tracked = getTrackedPosition(result.position || args.position_address);
-+          // Try multiple sources for the initial USD value, in order of reliability
-+          let initialUsd = 0;
-+          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
-+            // Looks like a real USD value (>10 means it's not just the SOL amount)
-+            initialUsd = tracked.initial_value_usd;
-+          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
-+            initialUsd = result.initial_value_usd;
-+          } else if (result.deposited_usd) {
-+            initialUsd = result.deposited_usd;
-+          } else if (tracked?.amount_sol) {
-+            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
-+            initialUsd = tracked.amount_sol * 73;
-+          }
-+          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
-+        }
-+        const pnlUnit = hasTruePnl ? "$" : "◎";
-+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
-         // Note low-yield closes in pool memory so screener avoids redeploying
-         if (args.reason && args.reason.toLowerCase().includes("yield")) {
-           const poolAddr = result.pool || args.pool_address;
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -583,237 +335,49 @@ config.js
    function nonEmptyString(...values) {
      for (const value of values) {
        if (typeof value !== "string") continue;
-  @@ -117,6 +164,7 @@ export const config = {
+  @@ -93,7 +140,6 @@ export const config = {
+  -    loneCandidateMinDegen: u.loneCandidateMinDegen ?? 50, // degen score that lets a SOLO candidate deploy without a narrative
+       allowedLaunchpads: u.allowedLaunchpads ?? [],  // allow-list launchpads, [] = no allow-list
+       blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
+       minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
+  @@ -104,8 +150,6 @@ export const config = {
+  -    autoSwapRetryAttempts: u.autoSwapRetryAttempts ?? 3,    // retries for base→SOL auto-swap on Jupiter failure
+  -    autoSwapRetryDelayMs:  u.autoSwapRetryDelayMs  ?? 3000, // delay between auto-swap retries
+       outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
+       outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
+       oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
+  @@ -120,6 +164,7 @@ export const config = {
   +    yieldDecayCheck:       u.yieldDecayCheck       ?? { enabled: false, minDropPct: 35, minAgeMinutes: 20, maxYieldPct: 40 },
        minSolToOpen:          u.minSolToOpen          ?? 0.55,
        deployAmountSol:       u.deployAmountSol       ?? 0.5,
        gasReserve:            u.gasReserve            ?? 0.2,
-  +49 -1
-
-index.js
-  @@ -25,7 +25,7 @@ import {
-  -import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
-  +import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
-   import { getActiveStrategy } from "./strategy-library.js";
-   import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
-   import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-  @@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
-  +import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
+  @@ -200,28 +245,6 @@ export const config = {
+  -    // Consecutive confirming polls required before a peak is raised or an exit fires.
+  -    // At a 3s poll cadence, 2 ticks ≈ 3-6s — filters single-tick noise without the
+  -    // old fixed 15s setTimeout recheck.
+  -    confirmTicks: Number(u.pnlConfirmTicks ?? 2),
+  -  },
+  -
+  -  // ─── Opportunity poller (catches strong pools between screening cycles) ──
+  -  opportunity: {
+  -    enabled: u.opportunityPollEnabled ?? true,
+  -    pollIntervalSec: Number(u.opportunityPollIntervalSec ?? 45),
+  -    limit: Number(u.opportunityPollLimit ?? 10),
+  -    // Pre-gate: only trigger the full deploy decision when the best candidate's
+  -    // Degen Score (0..100) clears this bar — avoids running screening every 45s.
+  -    minScore: Number(u.opportunityMinScore ?? 40),
+  -    // A smart wallet (from the agentmeridian server) sitting on the pool LOWERS the
+  -    // effective minScore by this much — a strong signal nudges a borderline pool through.
+  -    smartWalletScoreBonus: Number(u.opportunitySmartWalletBonus ?? 20),
+  -    // Degen Score targets (each sub-score saturates at its target). Tune to calibrate.
+  -    targetVolRatio: Number(u.degenTargetVolRatio ?? 500),    // volume/active_tvl for full trading sub-score
+  -    targetLpCount: Number(u.degenTargetLpCount ?? 150),      // unique_lps + positions_created for full LP sub-score
+  -    targetFeeRatio: Number(u.degenTargetFeeRatio ?? 1.0),    // fee/active_tvl for full fee sub-score
+  -    targetLiquidity: Number(u.degenTargetLiquidity ?? 50000), // active_tvl ($) for full liquidity sub-score
+     },
    
-   import { REPO_ROOT, repoPath } from "./repo-root.js";
-   
-  @@ -189,7 +190,7 @@ async function maybeRunMissedBriefing() {
-  -  const briefingHourUtc = 1;
-  +  const briefingHourUtc = 2;
-     if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
-   
-     log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
-  @@ -245,7 +246,8 @@ export async function runManagementCycle({ silent = false } = {}) {
-  -          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
-  +          const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
-  +          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
-               scheduleTrailingDropConfirmation(p.position);
-             }
-             continue;
-  @@ -442,7 +444,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
-  -    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-  +    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (single-side SOL, upstream default) | deposit: SOL only (amount_y, amount_x=0)`
-         + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
-   
-       // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
-  @@ -731,8 +733,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
-  -  // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
-  -  const briefingTask = cron.schedule(`0 1 * * *`, async () => {
-  +  // Morning Briefing at 9:00 AM UTC+7 (2:00 AM UTC)
-  +  const briefingTask = cron.schedule(`0 2 * * *`, async () => {
-       await runBriefing();
-     }, { timezone: 'UTC' });
-   
-  @@ -760,10 +762,25 @@ Summarize the current portfolio health, total fees earned, and performance of al
-  +        // ── Indicator-based exit (TP at peak on reversal signal) ───
-  +        if (config.indicators?.enabled && (p.pnl_pct ?? 0) > 0) {
-  +          const indicatorExit = await checkIndicatorExit(p).catch(() => null);
-  +          if (indicatorExit?.shouldExit) {
-  +            const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-  +            const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-  +            if (sinceLastTrigger >= cooldownMs) {
-  +              _pollTriggeredAt = Date.now();
-  +              log("state", `[PnL poll] Indicator exit: ${p.pair} — ${indicatorExit.reason} (PnL ${p.pnl_pct.toFixed(2)}%) — triggering management`);
-  +              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-  +            }
-  +            break;
-  +          }
-  +        }
-           const exit = updatePnlAndCheckExits(p.position, p, config.management);
-           if (exit) {
-             if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
-  -            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
-  +            const effectiveDrop = exit.effective_drop_pct ?? config.management.trailingDropPct;
-  +            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, effectiveDrop)) {
-                 scheduleTrailingDropConfirmation(p.position);
-               }
-               continue;
-  @@ -792,6 +809,19 @@ Summarize the current portfolio health, total fees earned, and performance of al
-  +        const decayCheck = checkYieldDecay(p.position, p, config.management);
-  +        if (decayCheck) {
-  +          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-  +          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-  +          if (sinceLastTrigger >= cooldownMs) {
-  +            _pollTriggeredAt = Date.now();
-  +            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — triggering management`);
-  +            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-  +          } else {
-  +            log("state", `[PnL poll] ${decayCheck.action}: ${p.pair} — ${decayCheck.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
-  +          }
-  +          break;
-  +        }
-         }
-       } finally {
-         _pnlPollBusy = false;
-  @@ -821,6 +851,55 @@ function withTimeout(promise, ms) {
-  +// ── Indicator-based exit (TP at peak on reversal) ─────────────────
-  +// Rate-limited: check at most once per 60s per position to avoid API spam
-  +const _indicatorCheckCache = new Map(); // position_address -> { result, ts }
-  +async function checkIndicatorExit(position) {
-  +  const cacheKey = position.position;
-  +  const now = Date.now();
-  +  const cached = _indicatorCheckCache.get(cacheKey);
-  +  if (cached && now - cached.ts < 60_000) {
-  +    return cached.result;
-  +  }
-  +  try {
-  +    const baseMint = position.base_mint;
-  +    if (!baseMint) return { shouldExit: false, reason: "no base_mint" };
-  +    const payload = await agentMeridianJson(
-  +      `/chart-indicators/${baseMint}?interval=5_MINUTE&candles=50&rsiLength=2`,
-  +      { headers: getAgentMeridianHeaders() }
-  +    );
-  +    const latest = payload?.latest || {};
-  +    const candle = latest?.candle || {};
-  +    const rsi = latest?.rsi?.value;
-  +    const st = latest?.supertrend || {};
-  +    const isBearish = st.direction === "bearish";
-  +    const supertrendBreakDown = !!latest?.states?.supertrendBreakDown;
-  +    const close = Number(candle.close);
-  +    const supertrendValue = Number(st.value);
-  +    const rsiOverbought = Number(config.indicators.rsiOverbought ?? 80);
-  +    const result = {
-  +      shouldExit: false,
-  +      reason: "",
-  +      signal: { rsi, supertrendDirection: st.direction, close, supertrendValue },
-  +    };
-  +    // Exit if Supertrend flipped bearish OR price broke below Supertrend
-  +    if (supertrendBreakDown) {
-  +      result.shouldExit = true;
-  +      result.reason = `Supertrend flipped bearish (close ${close} < ST ${supertrendValue})`;
-  +    } else if (isBearish && Number.isFinite(close) && Number.isFinite(supertrendValue) && close < supertrendValue) {
-  +      result.shouldExit = true;
-  +      result.reason = `Price below bearish Supertrend (close ${close} < ST ${supertrendValue})`;
-  +    } else if (rsi != null && rsi >= rsiOverbought) {
-  +      result.shouldExit = true;
-  +      result.reason = `RSI overbought (${rsi} >= ${rsiOverbought})`;
-  +    }
-  +    _indicatorCheckCache.set(cacheKey, { result, ts: now });
-  +    return result;
-  +  } catch (e) {
-  +    return { shouldExit: false, reason: `indicator error: ${e.message}` };
-  +  }
-  +}
-  +
-   async function shutdown(signal) {
-     if (_shuttingDown) {
-       log("shutdown", `Received ${signal} while shutdown is already in progress.`);
-  +86 -7
-
-prompt.js
-  @@ -121,7 +121,8 @@ POOL MEMORY: Past losses or problems → strong skip signal.
-  -- Use amount_y only, keep amount_x=0 and bins_above=0.
-  +- For strategy "spot": keep amount_x=0 and bins_above=0 (single-side SOL LP, upstream default).
-  +- For strategy "bid_ask": keep amount_x=0 and bins_above=0.
-   - Bin steps must be [80-125].
-   - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
-   
-  +2 -1
-
-state.js
-  @@ -426,19 +426,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
-  -  // ── Trailing TP ────────────────────────────────────────────────
-  +  // ── Trailing TP (time-decay) ────────────────────────────────────
-     if (!pnl_pct_suspicious && pos.trailing_active) {
-  +    // Time-decay trailing drop: young positions = tight, old positions = wide
-  +    let effectiveDropPct = mgmtConfig.trailingDropPct;
-  +    if (positionData?.age_minutes != null) {
-  +      if (positionData.age_minutes < 30) {
-  +        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
-  +      } else if (positionData.age_minutes < 90) {
-  +        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
-  +      } else {
-  +        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
-  +      }
-  +    }
-       const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
-  -    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
-  +    if (dropFromPeak >= effectiveDropPct) {
-         return {
-           action: "TRAILING_TP",
-  -        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
-  +        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
-           needs_confirmation: true,
-           peak_pnl_pct: pos.peak_pnl_pct,
-           current_pnl_pct: currentPnlPct,
-           drop_from_peak_pct: dropFromPeak,
-  -      };
-  -    }
-  +        effective_drop_pct: effectiveDropPct,
-  +        };
-  +        }
-     }
-   
-     // ── Out of range too long ──────────────────────────────────────
-  @@ -470,6 +482,45 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
-  +/**
-  + * Check if a position's yield has decayed significantly from deploy.
-  + * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
-  + * @param {string} position_address
-  + * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
-  + * @param {object} mgmtConfig
-  + * Returns { action, reason } or null if no decay detected.
-  + */
-  +export function checkYieldDecay(position_address, positionData, mgmtConfig) {
-  +  const decayConfig = mgmtConfig.yieldDecayCheck;
-  +  if (!decayConfig?.enabled) return null;
-  +
-  +  const state = load();
-  +  const pos = state.positions[position_address];
-  +  if (!pos || pos.closed) return null;
-  +
-  +  const deployYield = pos.signal_snapshot?.fee_tvl_ratio ?? pos.initial_fee_tvl_24h;
-  +  const currentYield = positionData.fee_per_tvl_24h;
-  +  const ageMinutes = positionData.age_minutes ?? 0;
-  +
-  +  if (deployYield == null || currentYield == null) return null;
-  +  if (ageMinutes < (decayConfig.minAgeMinutes ?? 20)) return null;
-  +
-  +  const minDeployYield = decayConfig.maxYieldPct ?? 40;
-  +  if (deployYield < minDeployYield) return null;  // skip low-yield deploys
-  +
-  +  const dropPct = ((deployYield - currentYield) / deployYield) * 100;
-  +  const minDrop = decayConfig.minDropPct ?? 35;
-  +
-  +  if (dropPct >= minDrop) {
-  +    return {
-  +      action: "YIELD_DECAY",
-  +      reason: `Yield decay: ${currentYield.toFixed(2)}% (dropped ${dropPct.toFixed(1)}% from deploy ${deployYield.toFixed(2)}%, age: ${ageMinutes}m)`,
-  +    };
-  +  }
-  +
-  +  return null;
-  +}
-  +
-   // ─── Briefing Tracking ─────────────────────────────────────────
-   
-   /**
-  +56 -5
+     // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
+  +49 -26
 
 tools/dlmm.js
   @@ -80,11 +80,19 @@ async function getDLMM() {
@@ -842,55 +406,33 @@ tools/dlmm.js
        );
      }
      if (isSingleSidedSol) {
-  @@ -1719,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
+  @@ -1229,16 +1237,9 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
+  -        // Gate PnL rules ONLY when the tick is genuinely unpriceable (no real number
+  -        // from either method — e.g. missing deposits / data outage). Reported-vs-derived
+  -        // divergence is normal noise on volatile pools, so it is logged but NOT gated —
+  -        // gating on it froze all exits (stop-loss/trailing/close) and stranded positions.
+  -        const pnlPctSuspicious = reportedPnlPct == null && derivedPnlPct == null;
+  +        const pnlPctSuspicious = pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5);
+           if (pnlPctSuspicious) {
+  -          log("positions_warn", `Unpriceable pnl_pct for ${positionAddress.slice(0, 8)}: no valid reported/derived value this tick — PnL rules paused`);
+  -        } else if (pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5)) {
+  -          // Informational only — does not gate rules.
+  -          log("positions_warn", `pnl_pct divergence for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)} (informational)`);
+  +          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
+           }
+   
+           positions.push({
+  @@ -1726,6 +1727,7 @@ export async function closePosition({ position_address, reason }) {
   +          pnl_true_usd: pnlTrueUsd,
              base_mint: closeBaseMint,
            };
          }
-  @@ -2022,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
+  @@ -2029,6 +2031,7 @@ export async function closePosition({ position_address, reason }) {
   +        pnl_true_usd: pnlTrueUsd,
            base_mint: closeBaseMint,
          };
        }
-  +14 -4
-
-tools/executor.js
-  @@ -12,7 +12,7 @@ import {
-  -import { setPositionInstruction } from "../state.js";
-  +import { setPositionInstruction, getTrackedPosition } from "../state.js";
-   
-   import { getPoolMemory, addPoolNote } from "../pool-memory.js";
-   import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
-  @@ -629,7 +629,30 @@ export async function executeTool(name, args) {
-  -        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
-  +        const hasTruePnl = result.pnl_true_usd != null;
-  +        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
-  +        // Compute true USD percentage — use final_value_usd from Meteora if available
-  +        // since initial_value_usd is sometimes stored as SOL amount instead of USD
-  +        let realPnlPct = result.pnl_pct ?? 0;
-  +        if (hasTruePnl && result.pnl_true_usd != null) {
-  +          const tracked = getTrackedPosition(result.position || args.position_address);
-  +          // Try multiple sources for the initial USD value, in order of reliability
-  +          let initialUsd = 0;
-  +          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
-  +            // Looks like a real USD value (>10 means it's not just the SOL amount)
-  +            initialUsd = tracked.initial_value_usd;
-  +          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
-  +            initialUsd = result.initial_value_usd;
-  +          } else if (result.deposited_usd) {
-  +            initialUsd = result.deposited_usd;
-  +          } else if (tracked?.amount_sol) {
-  +            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
-  +            initialUsd = tracked.amount_sol * 73;
-  +          }
-  +          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
-  +        }
-  +        const pnlUnit = hasTruePnl ? "$" : "◎";
-  +        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
-           // Note low-yield closes in pool memory so screener avoids redeploying
-           if (args.reason && args.reason.toLowerCase().includes("yield")) {
-             const poolAddr = result.pool || args.pool_address;
-  +25 -2
+  +16 -13
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
