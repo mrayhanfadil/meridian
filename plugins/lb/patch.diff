@@ -3,9 +3,9 @@ config.js         | 50 +++++++++++++++++++++++++++++-
  prompt.js         |  2 +-
  state.js          | 61 +++++++++++++++++++++++++++++++++---
  tools/dlmm.js     | 33 ++++++++++----------
- tools/executor.js | 35 +++++++++++++++++++--
+ tools/executor.js | 39 ++++++++++++++++++++---
  tools/wallet.js   | 50 ++++++++++++++++++++++++------
- 7 files changed, 280 insertions(+), 44 deletions(-)
+ 7 files changed, 282 insertions(+), 46 deletions(-)
 
 diff --git a/config.js b/config.js
 index 73c7c86..906ad56 100644
@@ -424,7 +424,7 @@ index f1fb130..34fc0a7 100644
        };
      }
 diff --git a/tools/executor.js b/tools/executor.js
-index 8196dae..9ed0d23 100644
+index 8196dae..eaeaa71 100644
 --- a/tools/executor.js
 +++ b/tools/executor.js
 @@ -12,7 +12,7 @@ import {
@@ -483,6 +483,20 @@ index 8196dae..9ed0d23 100644
        const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
        const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
        const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
+@@ -757,11 +786,11 @@ async function runSafetyChecks(name, args) {
+       if (
+         isSingleSidedSol &&
+         args.upside_pct == null &&
+-        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
++        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove < 0)
+       ) {
+         return {
+           pass: false,
+-          reason: "Single-side SOL deploy must use bins_above=0.",
++          reason: "Single-side SOL deploy requires bins_above to be a non-negative integer (0 is allowed but executor auto-fills >0 for spot strategy).",
+         };
+       }
+ 
 diff --git a/tools/wallet.js b/tools/wallet.js
 index d7a4e28..e36a289 100644
 --- a/tools/wallet.js
@@ -964,7 +978,18 @@ tools/executor.js
          const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
          const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
          const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
-  +32 -3
+  @@ -757,11 +786,11 @@ async function runSafetyChecks(name, args) {
+  -        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
+  +        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove < 0)
+         ) {
+           return {
+             pass: false,
+  -          reason: "Single-side SOL deploy must use bins_above=0.",
+  +          reason: "Single-side SOL deploy requires bins_above to be a non-negative integer (0 is allowed but executor auto-fills >0 for spot strategy).",
+           };
+         }
+   
+  +34 -5
 
 tools/wallet.js
   @@ -7,14 +7,24 @@ import {
