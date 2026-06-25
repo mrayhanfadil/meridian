@@ -738,13 +738,7 @@ async function runSafetyChecks(name, args) {
         };
       }
       const requestedBinsBelow = Number(args.bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow);
-      // Auto-fill bins_above for spot strategy: symmetric range (max 8 = ~8% upside)
-      // The LLM consistently passes bins_above=0 despite prompt instructions, so we force it
-      let requestedBinsAbove = Number(args.bins_above ?? 0);
-      if (requestedBinsAbove === 0 && (args.strategy ?? config.strategy.strategy) === "spot" && requestedBinsBelow > 0) {
-        requestedBinsAbove = Math.max(8, Math.round(requestedBinsBelow / 3));
-        log("deploy", `Auto-setting bins_above=${requestedBinsAbove} for spot strategy (LLM passed 0)`);
-      }
+      const requestedBinsAbove = Number(args.bins_above ?? 0);
       const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
       const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
       const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
@@ -786,11 +780,11 @@ async function runSafetyChecks(name, args) {
       if (
         isSingleSidedSol &&
         args.upside_pct == null &&
-        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove < 0)
+        (!Number.isFinite(requestedBinsAbove) || !Number.isInteger(requestedBinsAbove) || requestedBinsAbove !== 0)
       ) {
         return {
           pass: false,
-          reason: "Single-side SOL deploy requires bins_above to be a non-negative integer (0 is allowed but executor auto-fills >0 for spot strategy).",
+          reason: "Single-side SOL deploy must use bins_above=0.",
         };
       }
 
