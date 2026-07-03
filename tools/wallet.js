@@ -7,7 +7,7 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "../logger.js";
-import { config, nextRpcUrl, nextHeliusKey } from "../config.js";
+import { config, nextRpcUrl, nextHeliusKey, getHeliusKeyPool } from "../config.js";
 
 let _connection = null;
 let _wallet = null;
@@ -74,7 +74,7 @@ export async function getWalletBalances() {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
 
-  const HELIUS_KEY = config.getHeliusKeyPool?.().length ? config.getHeliusKeyPool()[0] : process.env.HELIUS_API_KEY;
+  const HELIUS_KEY = getHeliusKeyPool?.().length ? getHeliusKeyPool()[0] : process.env.HELIUS_API_KEY;
   if (!HELIUS_KEY) {
     log("wallet_error", "HELIUS_API_KEY (or HELIUS_API_KEYS) not set in .env");
     return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
@@ -84,7 +84,7 @@ export async function getWalletBalances() {
     // Round-robin across all Helius keys with retry on 429/5xx within a single call.
     // On success, advance the cursor so the next getWalletBalances() starts past
     // the key we just used — gives even distribution across cycles.
-    const pool = config.getHeliusKeyPool?.() || [HELIUS_KEY];
+    const pool = getHeliusKeyPool?.() || [HELIUS_KEY];
     const maxAttempts = Math.max(1, pool.length);
     let res;
     let lastErr;
@@ -202,11 +202,19 @@ export async function swapToken({
     const amountStr = Math.floor(amount * Math.pow(10, decimals)).toString();
 
     // ─── Get Swap V2 order (unsigned tx + requestId) ───────────
+    // dynamicSlippage=true: Jupiter V2 picks optimal slippage per quote (verified
+    // 2026-07-03: returns 22 bps on liquid pairs, higher on illiquid). Without
+    // this, we either lock in too-tight slippage (rejection on volatile tokens)
+    // or pay default 22 bps when we could route better.
+    // priorityLevel=medium: reduces "tx confirmed but price moved" window
+    // without burning priority fees on every swap. Empty dust below.
     const search = new URLSearchParams({
       inputMint: input_mint,
       outputMint: output_mint,
       amount: amountStr,
       taker: wallet.publicKey.toString(),
+      dynamicSlippage: "true",
+      priorityLevel: "medium",
     });
     const referralParams = getJupiterReferralParams();
     if (referralParams) {
