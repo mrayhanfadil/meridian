@@ -3560,7 +3560,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-22T16:00:44.955Z",
         "closed_at": "2026-06-22T17:01:50.938Z",
         "pnl_pct": -0.15,
         "pnl_usd": -0.11,
@@ -3579,7 +3579,13 @@
         "exit_tvl": 25430.970863382136,
         "exit_volume": 9209.351142255657,
         "sol_usd_at_close": 71.95,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1762 USD / 71.95 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1762 USD / 71.95 SOL/USD",
+        "initial_value_sol": 0.99999999,
+        "initial_value_usd": 73.0501,
+        "lower_bin_id": -391,
+        "upper_bin_id": -337,
+        "pool_active_bin_id_at_deploy": -337,
+        "bin_step": 100
       }
     ],
     "total_deploys": 3,
@@ -6613,7 +6619,7 @@
         "bin_step": 125
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-21T11:50:50.359Z",
         "closed_at": "2026-06-21T12:52:13.344Z",
         "pnl_pct": -0.23,
         "pnl_usd": -0.17,
@@ -6632,7 +6638,13 @@
         "exit_tvl": 11543.388791621466,
         "exit_volume": 3353.433468872819,
         "sol_usd_at_close": 72.46,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0669 USD / 72.46 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0669 USD / 72.46 SOL/USD",
+        "initial_value_sol": 0.99999998,
+        "initial_value_usd": 73.2377,
+        "lower_bin_id": -499,
+        "upper_bin_id": -435,
+        "pool_active_bin_id_at_deploy": -435,
+        "bin_step": 125
       },
       {
         "deployed_at": "2026-06-21T23:20:39.982Z",
@@ -10192,7 +10204,7 @@
     "base_mint": "B6f27ETGcjgGNB1fqULJbXVmw9FnL8HgBp7R83hmpump",
     "deploys": [
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-21T16:39:09.443Z",
         "closed_at": "2026-06-21T16:45:55.053Z",
         "pnl_pct": 0.27,
         "pnl_usd": 0.2,
@@ -10211,10 +10223,14 @@
         "exit_tvl": 59716.255351633954,
         "exit_volume": 40159.082130576906,
         "sol_usd_at_close": 72.46,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0219 USD / 72.46 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0219 USD / 72.46 SOL/USD",
+        "lower_bin_id": -524,
+        "upper_bin_id": -469,
+        "pool_active_bin_id_at_deploy": -469,
+        "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-21T17:39:56.927Z",
         "closed_at": "2026-06-21T19:42:57.560Z",
         "pnl_pct": 0.47,
         "pnl_usd": 0.35,
@@ -10233,10 +10249,14 @@
         "exit_tvl": 49168.1980016696,
         "exit_volume": 35697.753746644994,
         "sol_usd_at_close": 72.46,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 1.1454 USD / 72.46 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 1.1454 USD / 72.46 SOL/USD",
+        "lower_bin_id": -536,
+        "upper_bin_id": -472,
+        "pool_active_bin_id_at_deploy": -472,
+        "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-22T02:20:34.377Z",
         "closed_at": "2026-06-22T02:55:57.182Z",
         "pnl_pct": -0.48,
         "pnl_usd": -0.35,
@@ -10255,10 +10275,14 @@
         "exit_tvl": 59255.91525089955,
         "exit_volume": 19550.52417822478,
         "sol_usd_at_close": 71.95,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.0188 USD / 71.95 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.0188 USD / 71.95 SOL/USD",
+        "lower_bin_id": -499,
+        "upper_bin_id": -439,
+        "pool_active_bin_id_at_deploy": -439,
+        "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-22T11:21:03.937Z",
         "closed_at": "2026-06-22T12:24:25.600Z",
         "pnl_pct": 0.62,
         "pnl_usd": 0.46,
@@ -10277,10 +10301,14 @@
         "exit_tvl": 60558.46487737803,
         "exit_volume": 18462.879751496806,
         "sol_usd_at_close": 71.95,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1881 USD / 71.95 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1881 USD / 71.95 SOL/USD",
+        "lower_bin_id": -510,
+        "upper_bin_id": -459,
+        "pool_active_bin_id_at_deploy": -459,
+        "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-22T18:31:03.794Z",
         "closed_at": "2026-06-22T20:19:13.368Z",
         "pnl_pct": -0.25,
         "pnl_usd": -0.18,
@@ -10299,7 +10327,11 @@
         "exit_tvl": 60457.706097197035,
         "exit_volume": 22139.594362835454,
         "sol_usd_at_close": 71.95,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.4099 USD / 71.95 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.4099 USD / 71.95 SOL/USD",
+        "lower_bin_id": -511,
+        "upper_bin_id": -457,
+        "pool_active_bin_id_at_deploy": -457,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-06-23T10:00:45.215Z",
@@ -10861,7 +10893,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-30T13:09:14.879Z",
         "closed_at": "2026-06-30T13:50:53.905Z",
         "pnl_pct": 0.08,
         "pnl_usd": 0.09,
@@ -10878,7 +10910,13 @@
         "entry_volume": 27214.96258005452,
         "exit_mcap": 1134132.7420637256,
         "exit_tvl": 65719.94786319022,
-        "exit_volume": 27279.475607348533
+        "exit_volume": 27279.475607348533,
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 108.4737,
+        "lower_bin_id": -443,
+        "upper_bin_id": -423,
+        "pool_active_bin_id_at_deploy": -423,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-07-02T13:31:22.217Z",
@@ -13272,7 +13310,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-22T05:30:54.412Z",
         "closed_at": "2026-06-22T06:20:24.490Z",
         "pnl_pct": 0.1,
         "pnl_usd": 0.08,
@@ -13291,7 +13329,13 @@
         "exit_tvl": 19259.085553966932,
         "exit_volume": 14036.399632909262,
         "sol_usd_at_close": 71.95,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1467 USD / 71.95 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1467 USD / 71.95 SOL/USD",
+        "initial_value_sol": 0.99999997,
+        "initial_value_usd": 73.9159,
+        "lower_bin_id": 322,
+        "upper_bin_id": 380,
+        "pool_active_bin_id_at_deploy": 380,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-06-23T08:10:34.213Z",
@@ -15172,7 +15216,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-23T01:41:41.656Z",
         "closed_at": "2026-06-23T03:25:57.180Z",
         "pnl_pct": 1.16,
         "pnl_usd": 1.25,
@@ -15191,7 +15235,13 @@
         "exit_tvl": 80335.3948042618,
         "exit_volume": 78601.35619092453,
         "sol_usd_at_close": 69.71,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 3.3842 USD / 69.71 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 3.3842 USD / 69.71 SOL/USD",
+        "initial_value_sol": 1.5,
+        "initial_value_usd": 107.5589,
+        "lower_bin_id": -565,
+        "upper_bin_id": -516,
+        "pool_active_bin_id_at_deploy": -516,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-06-23T09:30:39.421Z",
@@ -15935,7 +15985,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-23T23:30:57.708Z",
         "closed_at": "2026-06-24T00:25:23.018Z",
         "pnl_pct": 0.64,
         "pnl_usd": 0.66,
@@ -15954,7 +16004,12 @@
         "exit_tvl": 73041.37044445991,
         "exit_volume": 40526.632587859385,
         "sol_usd_at_close": 68.11,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.0964 USD / 68.11 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.0964 USD / 68.11 SOL/USD",
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 104.1619,
+        "lower_bin_id": -376,
+        "upper_bin_id": -356,
+        "pool_active_bin_id_at_deploy": -356
       },
       {
         "deployed_at": "2026-06-24T17:11:13.238Z",
@@ -19030,7 +19085,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-23T16:20:55.431Z",
         "closed_at": "2026-06-23T17:00:15.817Z",
         "pnl_pct": 0.25,
         "pnl_usd": 0.25,
@@ -19049,7 +19104,13 @@
         "exit_tvl": 28408.615228439707,
         "exit_volume": 41647.176990264845,
         "sol_usd_at_close": 69.71,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.6007 USD / 69.71 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.6007 USD / 69.71 SOL/USD",
+        "initial_value_sol": 1.49999998,
+        "initial_value_usd": 103.5871,
+        "lower_bin_id": -363,
+        "upper_bin_id": -338,
+        "pool_active_bin_id_at_deploy": -338,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-06-23T23:15:44.376Z",
@@ -19542,7 +19603,7 @@
     "base_mint": "FMqh9mqR6drPZqqW6wPqLHxX4rqNDWGhYLaMfoaJpump",
     "deploys": [
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-23T23:11:03.164Z",
         "closed_at": "2026-06-23T23:12:40.890Z",
         "pnl_pct": 0.09,
         "pnl_usd": 0.1,
@@ -19561,10 +19622,14 @@
         "exit_tvl": 38612.62505189768,
         "exit_volume": 357877.25277998723,
         "sol_usd_at_close": 69.71,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.0465 USD / 69.71 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.0465 USD / 69.71 SOL/USD",
+        "lower_bin_id": -526,
+        "upper_bin_id": -501,
+        "pool_active_bin_id_at_deploy": -501,
+        "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-24T00:45:34.440Z",
         "closed_at": "2026-06-24T00:51:42.847Z",
         "pnl_pct": 2.6,
         "pnl_usd": 2.73,
@@ -19583,7 +19648,11 @@
         "exit_tvl": 79175.18264898109,
         "exit_volume": 430522.6700155137,
         "sol_usd_at_close": 68.11,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 4.4878 USD / 68.11 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 4.4878 USD / 68.11 SOL/USD",
+        "lower_bin_id": -480,
+        "upper_bin_id": -455,
+        "pool_active_bin_id_at_deploy": -455,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-06-24T07:40:45.062Z",
@@ -21056,7 +21125,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-24T04:56:59.850Z",
         "closed_at": "2026-06-24T05:06:06.543Z",
         "pnl_pct": -0.07,
         "pnl_usd": -0.07,
@@ -21075,7 +21144,12 @@
         "exit_tvl": 38757.90813833989,
         "exit_volume": 57568.659511409416,
         "sol_usd_at_close": 68.11,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.1165 USD / 68.11 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.1165 USD / 68.11 SOL/USD",
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 104.2221,
+        "lower_bin_id": -494,
+        "upper_bin_id": -474,
+        "pool_active_bin_id_at_deploy": -474
       },
       {
         "deployed_at": "2026-06-24T11:30:53.086Z",
@@ -23654,7 +23728,7 @@
         "bin_step": 80
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-26T18:16:38.616Z",
         "closed_at": "2026-06-26T18:55:50.786Z",
         "pnl_pct": -0.53,
         "pnl_usd": -0.58,
@@ -23671,7 +23745,13 @@
         "entry_volume": 300886.62971799105,
         "exit_mcap": 1919671.4066593444,
         "exit_tvl": 158209.65123749647,
-        "exit_volume": 331225.9694186834
+        "exit_volume": 331225.9694186834,
+        "initial_value_sol": 1.5,
+        "initial_value_usd": 109.0763,
+        "lower_bin_id": -442,
+        "upper_bin_id": -421,
+        "pool_active_bin_id_at_deploy": -421,
+        "bin_step": 80
       },
       {
         "deployed_at": "2026-06-27T00:57:18.175Z",
@@ -25298,7 +25378,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-28T02:42:36.892Z",
         "closed_at": "2026-06-28T02:47:23.162Z",
         "pnl_pct": 0.98,
         "pnl_usd": 1.04,
@@ -25317,7 +25397,12 @@
         "exit_tvl": 69589.34116848567,
         "exit_volume": 67475.75905798942,
         "sol_usd_at_close": 71.38,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-06-28: 2.4378 USD / 71.38 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-28: 2.4378 USD / 71.38 SOL/USD",
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 105.9487,
+        "lower_bin_id": -357,
+        "upper_bin_id": -337,
+        "pool_active_bin_id_at_deploy": -337
       },
       {
         "deployed_at": "2026-06-28T12:36:27.972Z",
@@ -26852,10 +26937,10 @@
     "base_mint": "5npesGsnVhcQbh6oVcsLtn5UKqdgYeipgDKsGaappump",
     "deploys": [
       {
-        "deployed_at": null,
+        "deployed_at": "2026-06-29T17:02:16.252Z",
         "closed_at": "2026-06-29T17:28:49.786Z",
-        "pnl_pct": 0,
-        "pnl_usd": 0,
+        "pnl_pct": -0.9214,
+        "pnl_usd": -3.2786,
         "fees_earned_usd": 0,
         "fees_earned_sol": null,
         "fee_earned_pct": null,
@@ -26869,7 +26954,13 @@
         "entry_volume": 51418.23340782498,
         "exit_mcap": 411153.24343955825,
         "exit_tvl": 48958.626466080415,
-        "exit_volume": 55477.03230837477
+        "exit_volume": 55477.03230837477,
+        "initial_value_sol": 1.49999998,
+        "initial_value_usd": 111.3004,
+        "lower_bin_id": -527,
+        "upper_bin_id": -502,
+        "pool_active_bin_id_at_deploy": -502,
+        "bin_step": 100
       }
     ],
     "total_deploys": 1,
@@ -27741,7 +27832,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-05T07:12:33.681Z",
         "closed_at": "2026-07-05T07:58:04.538Z",
         "pnl_pct": 0.58,
         "pnl_usd": 0.7,
@@ -27760,7 +27851,11 @@
         "exit_tvl": 45502.612417022385,
         "exit_volume": 13583.11344786787,
         "sol_usd_at_close": 80.55,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 0.4094 USD / 80.55 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 0.4094 USD / 80.55 SOL/USD",
+        "lower_bin_id": -566,
+        "upper_bin_id": -546,
+        "pool_active_bin_id_at_deploy": -546,
+        "bin_step": 100
       }
     ],
     "total_deploys": 16,
@@ -29407,7 +29502,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-01T13:47:01.024Z",
         "closed_at": "2026-07-01T13:59:00.715Z",
         "pnl_pct": 1.21,
         "pnl_usd": 1.36,
@@ -29426,7 +29521,13 @@
         "exit_tvl": 19295.354062636317,
         "exit_volume": 26261.963030256866,
         "sol_usd_at_close": 77.46,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-07-01: 1.7562 USD / 77.46 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-01: 1.7562 USD / 77.46 SOL/USD",
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 113.245,
+        "lower_bin_id": -563,
+        "upper_bin_id": -541,
+        "pool_active_bin_id_at_deploy": -541,
+        "bin_step": 100
       },
       {
         "deployed_at": "2026-07-02T02:31:07.129Z",
@@ -38753,7 +38854,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-03T18:58:21.471Z",
         "closed_at": "2026-07-03T19:14:56.697Z",
         "pnl_pct": -0.03,
         "pnl_usd": -0.04,
@@ -38772,7 +38873,12 @@
         "exit_tvl": 57954.83714143646,
         "exit_volume": 155881.4881575163,
         "sol_usd_at_close": 82.34,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-07-03: 0.2355 USD / 82.34 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-03: 0.2355 USD / 82.34 SOL/USD",
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 123.2124,
+        "lower_bin_id": -523,
+        "upper_bin_id": -501,
+        "pool_active_bin_id_at_deploy": -501
       },
       {
         "deployed_at": "2026-07-04T02:44:58.121Z",
@@ -39263,7 +39369,7 @@
     "base_mint": "qPorq2UQuP6g1KZnGKMQEfVxN87BYvaYdqVy3KVpump",
     "deploys": [
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-03T05:57:47.608Z",
         "closed_at": "2026-07-03T06:13:10.789Z",
         "pnl_pct": 0.1,
         "pnl_usd": 0.12,
@@ -39280,10 +39386,15 @@
         "entry_volume": 23936.072339223123,
         "exit_mcap": 219792.18957614983,
         "exit_tvl": 19539.28129487257,
-        "exit_volume": 25411.18218257585
+        "exit_volume": 25411.18218257585,
+        "initial_value_sol": 1.49999999,
+        "initial_value_usd": 121.5827,
+        "lower_bin_id": -615,
+        "upper_bin_id": -595,
+        "pool_active_bin_id_at_deploy": -595
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-03T06:20:38.310Z",
         "closed_at": "2026-07-03T06:38:32.763Z",
         "pnl_pct": -3.77,
         "pnl_usd": -4.59,
@@ -39300,7 +39411,13 @@
         "entry_volume": 27428.467966303728,
         "exit_mcap": 184917.90506240804,
         "exit_tvl": 18285.814510916494,
-        "exit_volume": 30875.731388397107
+        "exit_volume": 30875.731388397107,
+        "initial_value_sol": 1.49999998,
+        "initial_value_usd": 121.5177,
+        "lower_bin_id": -630,
+        "upper_bin_id": -605,
+        "pool_active_bin_id_at_deploy": -605,
+        "bin_step": 100
       }
     ],
     "total_deploys": 2,
@@ -42132,7 +42249,7 @@
         "bin_step": 125
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-04T22:09:39.530Z",
         "closed_at": "2026-07-04T22:19:10.407Z",
         "pnl_pct": -0.04,
         "pnl_usd": -0.05,
@@ -42151,7 +42268,13 @@
         "exit_tvl": 13130.9345990613,
         "exit_volume": 6085.739050958611,
         "sol_usd_at_close": 81.8,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-07-04: 0.4581 USD / 81.80 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-04: 0.4581 USD / 81.80 SOL/USD",
+        "initial_value_sol": 1.49999998,
+        "initial_value_usd": 122.7985,
+        "lower_bin_id": -345,
+        "upper_bin_id": -320,
+        "pool_active_bin_id_at_deploy": -320,
+        "bin_step": 125
       }
     ],
     "total_deploys": 4,
@@ -43268,7 +43391,7 @@
         "bin_step": 100
       },
       {
-        "deployed_at": null,
+        "deployed_at": "2026-07-05T06:52:06.452Z",
         "closed_at": "2026-07-05T07:58:23.459Z",
         "pnl_pct": 1.57,
         "pnl_usd": 1.9,
@@ -43287,7 +43410,11 @@
         "exit_tvl": 41979.17121155003,
         "exit_volume": 31601.8345545807,
         "sol_usd_at_close": 80.55,
-        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 3.8353 USD / 80.55 SOL/USD"
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 3.8353 USD / 80.55 SOL/USD",
+        "lower_bin_id": -519,
+        "upper_bin_id": -497,
+        "pool_active_bin_id_at_deploy": -497,
+        "bin_step": 100
       }
     ],
     "total_deploys": 3,

@@ -1,0 +1,12 @@
+{
+  "meteora_count": 601,
+  "classified": {
+    "deploy": 0,
+    "close": 195,
+    "close_with_claim": 0,
+    "claim": 180,
+    "other": 226
+  },
+  "pairs_reconstructed": 0,
+  "pairs": []
+}
