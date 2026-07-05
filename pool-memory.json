@@ -3497,7 +3497,7 @@
         "pnl_pct": -0.15,
         "pnl_usd": -0.11,
         "fees_earned_usd": 0.17622480347261502,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00244927,
         "fee_earned_pct": 0.24123812343817028,
         "range_efficiency": 100,
         "minutes_held": 60,
@@ -3509,7 +3509,9 @@
         "entry_volume": 8778.560184140057,
         "exit_mcap": 2489509.642141548,
         "exit_tvl": 25430.970863382136,
-        "exit_volume": 9209.351142255657
+        "exit_volume": 9209.351142255657,
+        "sol_usd_at_close": 71.95,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1762 USD / 71.95 SOL/USD"
       }
     ],
     "total_deploys": 3,
@@ -6497,7 +6499,7 @@
         "pnl_pct": -0.23,
         "pnl_usd": -0.17,
         "fees_earned_usd": 0.06688073679731248,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.000923,
         "fee_earned_pct": 0.09132012240440127,
         "range_efficiency": 100,
         "minutes_held": 61,
@@ -6509,7 +6511,9 @@
         "entry_volume": 4103.185935724681,
         "exit_mcap": 311525.42365133116,
         "exit_tvl": 11543.388791621466,
-        "exit_volume": 3353.433468872819
+        "exit_volume": 3353.433468872819,
+        "sol_usd_at_close": 72.46,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0669 USD / 72.46 SOL/USD"
       },
       {
         "deployed_at": "2026-06-21T23:20:39.982Z",
@@ -10018,7 +10022,7 @@
         "pnl_pct": 0.27,
         "pnl_usd": 0.2,
         "fees_earned_usd": 0.021942314317474718,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00030282,
         "fee_earned_pct": 0.029736493860860257,
         "range_efficiency": 33.3,
         "minutes_held": 6,
@@ -10030,7 +10034,9 @@
         "entry_volume": 39625.10222684436,
         "exit_mcap": 721581.336809509,
         "exit_tvl": 59716.255351633954,
-        "exit_volume": 40159.082130576906
+        "exit_volume": 40159.082130576906,
+        "sol_usd_at_close": 72.46,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 0.0219 USD / 72.46 SOL/USD"
       },
       {
         "deployed_at": null,
@@ -10038,7 +10044,7 @@
         "pnl_pct": 0.47,
         "pnl_usd": 0.35,
         "fees_earned_usd": 1.1454466108920738,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.01580799,
         "fee_earned_pct": 1.5466630042490521,
         "range_efficiency": 100,
         "minutes_held": 122,
@@ -10050,7 +10056,9 @@
         "entry_volume": 41757.63660392485,
         "exit_mcap": 597925.101580726,
         "exit_tvl": 49168.1980016696,
-        "exit_volume": 35697.753746644994
+        "exit_volume": 35697.753746644994,
+        "sol_usd_at_close": 72.46,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-21: 1.1454 USD / 72.46 SOL/USD"
       },
       {
         "deployed_at": null,
@@ -10058,7 +10066,7 @@
         "pnl_pct": -0.48,
         "pnl_usd": -0.35,
         "fees_earned_usd": 0.01882634903977196,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00026166,
         "fee_earned_pct": 0.02539087946430198,
         "range_efficiency": 5.7,
         "minutes_held": 35,
@@ -10070,7 +10078,9 @@
         "entry_volume": 21573.695382851267,
         "exit_mcap": 1003219.809598456,
         "exit_tvl": 59255.91525089955,
-        "exit_volume": 19550.52417822478
+        "exit_volume": 19550.52417822478,
+        "sol_usd_at_close": 71.95,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.0188 USD / 71.95 SOL/USD"
       },
       {
         "deployed_at": null,
@@ -10078,7 +10088,7 @@
         "pnl_pct": 0.62,
         "pnl_usd": 0.46,
         "fees_earned_usd": 0.18812838473362561,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00261471,
         "fee_earned_pct": 0.25492420330655213,
         "range_efficiency": 52.4,
         "minutes_held": 63,
@@ -10090,7 +10100,9 @@
         "entry_volume": 17841.552991632743,
         "exit_mcap": 783883.6623187258,
         "exit_tvl": 60558.46487737803,
-        "exit_volume": 18462.879751496806
+        "exit_volume": 18462.879751496806,
+        "sol_usd_at_close": 71.95,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1881 USD / 71.95 SOL/USD"
       },
       {
         "deployed_at": null,
@@ -10098,7 +10110,7 @@
         "pnl_pct": -0.25,
         "pnl_usd": -0.18,
         "fees_earned_usd": 0.40993633861606266,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00569752,
         "fee_earned_pct": 0.5591861156699052,
         "range_efficiency": 72.2,
         "minutes_held": 108,
@@ -10110,7 +10122,9 @@
         "entry_volume": 19473.89318731178,
         "exit_mcap": 848997.7905314118,
         "exit_tvl": 60457.706097197035,
-        "exit_volume": 22139.594362835454
+        "exit_volume": 22139.594362835454,
+        "sol_usd_at_close": 71.95,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.4099 USD / 71.95 SOL/USD"
       },
       {
         "deployed_at": "2026-06-23T10:00:45.215Z",
@@ -13022,7 +13036,7 @@
         "pnl_pct": 0.1,
         "pnl_usd": 0.08,
         "fees_earned_usd": 0.1466904812689984,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00203878,
         "fee_earned_pct": 0.19845605417570378,
         "range_efficiency": 36.7,
         "minutes_held": 49,
@@ -13034,7 +13048,9 @@
         "entry_volume": 13849.454099216242,
         "exit_mcap": 1716301.127282841,
         "exit_tvl": 19259.085553966932,
-        "exit_volume": 14036.399632909262
+        "exit_volume": 14036.399632909262,
+        "sol_usd_at_close": 71.95,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-22: 0.1467 USD / 71.95 SOL/USD"
       },
       {
         "deployed_at": "2026-06-23T08:10:34.213Z",
@@ -13702,7 +13718,7 @@
         "pnl_pct": 0.28,
         "pnl_usd": 0.29,
         "fees_earned_usd": 2.76089216417e-07,
-        "fees_earned_sol": 0.0,
+        "fees_earned_sol": 0,
         "fee_earned_pct": 2.674328243669758e-07,
         "range_efficiency": 3.2,
         "minutes_held": 31,
@@ -14892,7 +14908,7 @@
         "pnl_pct": 1.16,
         "pnl_usd": 1.25,
         "fees_earned_usd": 3.3841601390331904,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.04854627,
         "fee_earned_pct": 3.1463321676085343,
         "range_efficiency": 100,
         "minutes_held": 104,
@@ -14904,7 +14920,9 @@
         "entry_volume": 81948.81676870171,
         "exit_mcap": 361681.846765671,
         "exit_tvl": 80335.3948042618,
-        "exit_volume": 78601.35619092453
+        "exit_volume": 78601.35619092453,
+        "sol_usd_at_close": 69.71,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 3.3842 USD / 69.71 SOL/USD"
       },
       {
         "deployed_at": "2026-06-23T09:30:39.421Z",
@@ -15639,7 +15657,7 @@
         "pnl_pct": 0.64,
         "pnl_usd": 0.66,
         "fees_earned_usd": 0.0963718528854779,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00141494,
         "fee_earned_pct": 0.09252121257416701,
         "range_efficiency": 57.4,
         "minutes_held": 54,
@@ -15651,7 +15669,9 @@
         "entry_volume": 37251.82682680867,
         "exit_mcap": 2187155.774280153,
         "exit_tvl": 73041.37044445991,
-        "exit_volume": 40526.632587859385
+        "exit_volume": 40526.632587859385,
+        "sol_usd_at_close": 68.11,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.0964 USD / 68.11 SOL/USD"
       },
       {
         "deployed_at": "2026-06-24T17:11:13.238Z",
@@ -18672,7 +18692,7 @@
         "pnl_pct": 0.25,
         "pnl_usd": 0.25,
         "fees_earned_usd": 0.6006802054846819,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00861684,
         "fee_earned_pct": 0.5798791021207701,
         "range_efficiency": 23.1,
         "minutes_held": 39,
@@ -18684,7 +18704,9 @@
         "entry_volume": 37335.4108361466,
         "exit_mcap": 2406827.4907844844,
         "exit_tvl": 28408.615228439707,
-        "exit_volume": 41647.176990264845
+        "exit_volume": 41647.176990264845,
+        "sol_usd_at_close": 69.71,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.6007 USD / 69.71 SOL/USD"
       },
       {
         "deployed_at": "2026-06-23T23:15:44.376Z",
@@ -19176,7 +19198,7 @@
         "pnl_pct": 0.09,
         "pnl_usd": 0.1,
         "fees_earned_usd": 0.0465278972169532,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00066745,
         "fee_earned_pct": 0.044757694904538195,
         "range_efficiency": 0,
         "minutes_held": 1,
@@ -19188,7 +19210,9 @@
         "entry_volume": 355206.08981072286,
         "exit_mcap": 534706.7844049109,
         "exit_tvl": 38612.62505189768,
-        "exit_volume": 357877.25277998723
+        "exit_volume": 357877.25277998723,
+        "sol_usd_at_close": 69.71,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-23: 0.0465 USD / 69.71 SOL/USD"
       },
       {
         "deployed_at": null,
@@ -19196,7 +19220,7 @@
         "pnl_pct": 2.6,
         "pnl_usd": 2.73,
         "fees_earned_usd": 4.487751452554814,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.06588976,
         "fee_earned_pct": 4.281416564915637,
         "range_efficiency": 100,
         "minutes_held": 6,
@@ -19208,7 +19232,9 @@
         "entry_volume": 424069.2463478403,
         "exit_mcap": 678452.5934844068,
         "exit_tvl": 79175.18264898109,
-        "exit_volume": 430522.6700155137
+        "exit_volume": 430522.6700155137,
+        "sol_usd_at_close": 68.11,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 4.4878 USD / 68.11 SOL/USD"
       },
       {
         "deployed_at": "2026-06-24T07:40:45.062Z",
@@ -20642,7 +20668,7 @@
         "pnl_pct": -0.07,
         "pnl_usd": -0.07,
         "fees_earned_usd": 0.11648491632445479,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00171025,
         "fee_earned_pct": 0.11176607889540466,
         "range_efficiency": 66.7,
         "minutes_held": 9,
@@ -20654,7 +20680,9 @@
         "entry_volume": 53213.53217280902,
         "exit_mcap": 721592.5554053403,
         "exit_tvl": 38757.90813833989,
-        "exit_volume": 57568.659511409416
+        "exit_volume": 57568.659511409416,
+        "sol_usd_at_close": 68.11,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-24: 0.1165 USD / 68.11 SOL/USD"
       },
       {
         "deployed_at": "2026-06-24T11:30:53.086Z",
@@ -24799,7 +24827,7 @@
         "pnl_pct": 0.98,
         "pnl_usd": 1.04,
         "fees_earned_usd": 2.437813813260406,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.03415262,
         "fee_earned_pct": 2.300937054017564,
         "range_efficiency": 100,
         "minutes_held": 4,
@@ -24811,7 +24839,9 @@
         "entry_volume": 64189.63811301197,
         "exit_mcap": 2204929.940378622,
         "exit_tvl": 69589.34116848567,
-        "exit_volume": 67475.75905798942
+        "exit_volume": 67475.75905798942,
+        "sol_usd_at_close": 71.38,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-06-28: 2.4378 USD / 71.38 SOL/USD"
       },
       {
         "deployed_at": "2026-06-28T12:36:27.972Z",
@@ -27164,7 +27194,7 @@
         "pnl_pct": 0.58,
         "pnl_usd": 0.7,
         "fees_earned_usd": 0.4094331361763613,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00508297,
         "fee_earned_pct": 0.33934258507334686,
         "range_efficiency": 80,
         "minutes_held": 45,
@@ -27176,7 +27206,9 @@
         "entry_volume": 18056.43685288789,
         "exit_mcap": 367685.36078811815,
         "exit_tvl": 45502.612417022385,
-        "exit_volume": 13583.11344786787
+        "exit_volume": 13583.11344786787,
+        "sol_usd_at_close": 80.55,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 0.4094 USD / 80.55 SOL/USD"
       }
     ],
     "total_deploys": 16,
@@ -28216,7 +28248,7 @@
         "pnl_pct": -0.7,
         "pnl_usd": -0.77,
         "fees_earned_usd": 2.92678053964e-07,
-        "fees_earned_sol": 0.0,
+        "fees_earned_sol": 0,
         "fee_earned_pct": 2.647818675485146e-07,
         "range_efficiency": 14.3,
         "minutes_held": 35,
@@ -28806,7 +28838,7 @@
         "pnl_pct": 1.21,
         "pnl_usd": 1.36,
         "fees_earned_usd": 1.7561524643717512,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.02267173,
         "fee_earned_pct": 1.550754320108057,
         "range_efficiency": 100,
         "minutes_held": 11,
@@ -28818,7 +28850,9 @@
         "entry_volume": 22921.33653122602,
         "exit_mcap": 343645.818241094,
         "exit_tvl": 19295.354062636317,
-        "exit_volume": 26261.963030256866
+        "exit_volume": 26261.963030256866,
+        "sol_usd_at_close": 77.46,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-01: 1.7562 USD / 77.46 SOL/USD"
       },
       {
         "deployed_at": "2026-07-02T02:31:07.129Z",
@@ -37939,7 +37973,7 @@
         "pnl_pct": -0.03,
         "pnl_usd": -0.04,
         "fees_earned_usd": 0.23546074415540041,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00285962,
         "fee_earned_pct": 0.1911014715551269,
         "range_efficiency": 12.5,
         "minutes_held": 16,
@@ -37951,7 +37985,9 @@
         "entry_volume": 154747.69584202569,
         "exit_mcap": 622329.71973749,
         "exit_tvl": 57954.83714143646,
-        "exit_volume": 155881.4881575163
+        "exit_volume": 155881.4881575163,
+        "sol_usd_at_close": 82.34,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-03: 0.2355 USD / 82.34 SOL/USD"
       },
       {
         "deployed_at": "2026-07-04T02:44:58.121Z",
@@ -40638,16 +40674,6 @@
     "notes": [],
     "snapshots": [
       {
-        "ts": "2026-07-04T06:16:06.946Z",
-        "position": "AWu3ZJfmb5irzZhQf3sitZw1oBpEZhfWinBjKX4tyxmX",
-        "pnl_pct": 0.11,
-        "pnl_usd": 0.0017,
-        "in_range": true,
-        "unclaimed_fees_usd": 0.0022,
-        "minutes_out_of_range": 0,
-        "age_minutes": 30
-      },
-      {
         "ts": "2026-07-04T06:24:02.730Z",
         "position": "AWu3ZJfmb5irzZhQf3sitZw1oBpEZhfWinBjKX4tyxmX",
         "pnl_pct": 0.15,
@@ -41116,6 +41142,16 @@
         "unclaimed_fees_usd": 0,
         "minutes_out_of_range": 0,
         "age_minutes": 2
+      },
+      {
+        "ts": "2026-07-05T08:16:01.265Z",
+        "position": "HRdWag3xgb87rHJyrqiGRTX82h6s5mq6rxtF5XHqAR9p",
+        "pnl_pct": -0.26,
+        "pnl_usd": -0.004,
+        "in_range": true,
+        "unclaimed_fees_usd": 0.0002,
+        "minutes_out_of_range": 0,
+        "age_minutes": 4
       }
     ],
     "base_mint_cooldown_until": "2026-07-05T05:03:58.711Z",
@@ -41245,7 +41281,7 @@
         "pnl_pct": -0.04,
         "pnl_usd": -0.05,
         "fees_earned_usd": 0.4581271191033429,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.00560058,
         "fee_earned_pct": 0.373072270249636,
         "range_efficiency": 100,
         "minutes_held": 9,
@@ -41257,7 +41293,9 @@
         "entry_volume": 6209.679693411254,
         "exit_mcap": 1404456.6215867712,
         "exit_tvl": 13130.9345990613,
-        "exit_volume": 6085.739050958611
+        "exit_volume": 6085.739050958611,
+        "sol_usd_at_close": 81.8,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-04: 0.4581 USD / 81.80 SOL/USD"
       }
     ],
     "total_deploys": 4,
@@ -42361,7 +42399,7 @@
         "pnl_pct": 1.57,
         "pnl_usd": 1.9,
         "fees_earned_usd": 3.8353297222410316,
-        "fees_earned_sol": null,
+        "fees_earned_sol": 0.04761427,
         "fee_earned_pct": 3.1778377802485047,
         "range_efficiency": 100,
         "minutes_held": 66,
@@ -42373,7 +42411,9 @@
         "entry_volume": 29121.400541307063,
         "exit_mcap": 524776.5708048363,
         "exit_tvl": 41979.17121155003,
-        "exit_volume": 31601.8345545807
+        "exit_volume": 31601.8345545807,
+        "sol_usd_at_close": 80.55,
+        "_backfill_notes": "tier-a-binance-daily-close 2026-07-05: 3.8353 USD / 80.55 SOL/USD"
       }
     ],
     "total_deploys": 3,
