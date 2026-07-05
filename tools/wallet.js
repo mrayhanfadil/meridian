@@ -111,7 +111,7 @@ export async function getWalletBalances() {
     const data = await res.json();
     const balances = data.balances || [];
 
-    // ─── Find SOL and USDC ────────────────────────────────────
+    // ─── Find SOL and USDC ───────────────────────────────────
     const solEntry = balances.find(b => b.mint === config.tokens.SOL || b.symbol === "SOL");
     const usdcEntry = balances.find(b => b.mint === config.tokens.USDC || b.symbol === "USDC");
 
@@ -119,14 +119,31 @@ export async function getWalletBalances() {
     const solPrice = solEntry?.pricePerToken || 0;
     const solUsd = solEntry?.usdValue || 0;
     const usdcBalance = usdcEntry?.balance || 0;
+    // SOL/USD used to derive per-token SOL value (NOT a price feed — math only).
+    // Prefer live SOL price, fallback to config.management.solUsdFallback, then 0.
+    const solUsdRate = solPrice > 0
+      ? solPrice
+      : (Number(config.management?.solUsdFallback) || 0);
 
     // ─── Map all tokens ───────────────────────────────────────
-    const enrichedTokens = balances.map(b => ({
-      mint: b.mint,
-      symbol: b.symbol || b.mint.slice(0, 8),
-      balance: b.balance,
-      usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
-    }));
+    // Each token now carries both `usd` (raw USD value from Helius/Birdeye)
+    // and `sol_value` (USD ÷ SOL/USD, rounded to 6 decimals). For micro-cap
+    // tokens whose USD value is near-zero, sol_value surfaces the real
+    // worth — the dust-handling bug where 0.62 SOL got skipped on NEIL-SOL
+    // was caused by comparing `token.usd < 0.10` instead of sol_value.
+    const enrichedTokens = balances.map(b => {
+      const usd = b.usdValue ? Math.round(b.usdValue * 100) / 100 : null;
+      const sol_value = (usd != null && solUsdRate > 0)
+        ? Math.round((b.usdValue / solUsdRate) * 1e6) / 1e6
+        : null;
+      return {
+        mint: b.mint,
+        symbol: b.symbol || b.mint.slice(0, 8),
+        balance: b.balance,
+        usd,
+        sol_value,
+      };
+    });
 
     return {
       wallet: walletAddress,

@@ -165,6 +165,19 @@ export const config = {
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
     yieldDecayCheck:       u.yieldDecayCheck       ?? { enabled: false, minDropPct: 35, minAgeMinutes: 20, maxYieldPct: 40 },
+    chronicBlacklist:      u.chronicBlacklist      ?? {
+                              enabled: true,
+                              minSamples: 5,
+                              maxWinRate: 40,
+                              maxAvgPnlPct: -1,
+                              // NEW (2026-07-05): cumulative-USD-loss threshold catches
+                              // tokens that slip through WR/avgPnl checks but still bleed
+                              // SOL across many small losses (e.g. world-SOL: 61% WR,
+                              // avg +0.40%, but ~-$7.50 cumulative across 29 deploys).
+                              maxCumulativePnlUsd: -5,
+                              minCumulativePnlSamples: 8,
+                              cooldownHours: 168,
+                            },
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -174,8 +187,26 @@ export const config = {
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
+    // Absolute USD profit close — close position when realized PnL >= this many USD (above entry).
+    // Works alongside trailing TP: $5 USD wins (priority) if both would fire same tick.
+    // In solMode:true, pnl_usd is SOL-denominated, so we convert via solUsd fallback if available.
+    profitCloseUsd:        u.profitCloseUsd        ?? null, // e.g. 5 = close at +$5 absolute profit
+    profitCloseEnabled:    u.profitCloseEnabled    ?? false, // explicit kill switch
+    solUsdFallback:        u.solUsdFallback        ?? 150,  // SOL/USD used to convert pnl_usd SOL→USD when solMode:true
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
+    // Tier 1.3 (2026-07-05): SOL-equivalent dust threshold for auto-swap-after-close.
+    // Replaces the old USD check (`token.usd < 0.10`) which misclassified NEIL-SOL
+    // base residuals worth 0.62 SOL as "$0.04 dust" because the token had no
+    // reliable USD price (1 token ≈ $6.5e-6) but 95,577 tokens added up to
+    // a real position. 0.05 SOL ≈ $3.75 keeps true dust out and converts
+    // anything with recoverable SOL value.
+    autoSwapMinSol:        u.autoSwapMinSol        ?? 0.05,
+    // Below this SOL-equivalent, the auto-swap considers it true dust and
+    // leaves silently — slippage > value otherwise.
+    autoSwapBaseResidualAlertSol: u.autoSwapBaseResidualAlertSol ?? 0.005,
+    autoSwapRetryAttempts: u.autoSwapRetryAttempts ?? 3,
+    autoSwapRetryDelayMs:  u.autoSwapRetryDelayMs  ?? 3000,
   },
 
   // ─── Strategy Mapping ───────────────────

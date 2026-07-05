@@ -598,25 +598,60 @@ const PROTECTED_TOOLS = new Set([
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Swap a base token back to SOL with retry. Jupiter can transiently fail (no route,
- * quote error) and a single attempt silently leaves the token unsold — this retries
- * with a delay, re-fetching the balance each attempt (amounts can shift on partial
- * fills). Treats both a throw AND result.success===false / missing tx as failure.
- * Returns { swapped, result, token } — swapped=false if nothing to do or all attempts failed.
+ * Tier 1.3: Tiered dust handling (2026-07-05)
+ *
+ *   autoSwapMinSol = 0.05    → swap anything worth >= 0.05 SOL (~$3.75)
+ *   autoSwapBaseResidualAlertSol = 0.005 → below 0.005 SOL: leave silently as expected dust
+ *
+ * Tier 1.3 fixes the case where the bot correctly closed an LP but then
+ * "skipped" the residual base token as "dust" when its SOL-equivalent
+ * value was 0.62 SOL (NEIL-SOL close, 2026-07-05). The old `token.usd < 0.10`
+ * check evaluated `0.0000065 USD × 95,577 tokens ≈ $0.04`, marking it
+ * dust while 0.62 SOL sat unwrapped.
+ *
+ * New behavior:
+ *   • < 0.005 SOL: leave silently (real dust — gas > value)
+ *   • 0.005–0.05 SOL: log a Telegram warning, do NOT swap (illiquid micro-cap
+ *     dust where slippage would exceed value)
+ *   • ≥ 0.05 SOL: swap with dynamicSlippage already wired from Tier 1.1
+ *
+ * Anything left between 0.05 and 0.10 SOL would have been "below threshold"
+ * before; now it swaps. $0.10 USD was the wrong axis — SOL-equivalent is.
  */
 async function swapBaseToSolWithRetry(baseMint, label) {
   const attempts = Math.max(1, Number(config.management.autoSwapRetryAttempts ?? 3));
   const delayMs = Math.max(0, Number(config.management.autoSwapRetryDelayMs ?? 3000));
+  const minSol = Number(config.management.autoSwapMinSol ?? 0.05);
+  const residualAlertSol = Number(config.management.autoSwapBaseResidualAlertSol ?? 0.005);
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const balances = await getWalletBalances({});
       const token = balances.tokens?.find((t) => t.mint === baseMint);
-      if (!token || token.usd < 0.10) {
-        // Nothing left to swap (already sold or dust) — treat as done.
+      if (!token) {
+        // Nothing left (already sold or transferred out) — treat as done.
         return { swapped: attempt > 1, result: null, token: null };
       }
-      log("executor", `Auto-swapping ${label} ${token.symbol || baseMint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL (attempt ${attempt}/${attempts})`);
+      // Tier 1.3: SOL-value-based gate, not USD
+      const solValue = token.sol_value ?? (token.usd && balances.sol_price > 0
+        ? token.usd / balances.sol_price
+        : null);
+      if (solValue == null) {
+        log("executor_warn", `Auto-skip ${label}: ${token.symbol || baseMint.slice(0, 8)} — no price feed (sol_value=null). Will retry next cycle.`);
+        return { skipped: true, reason: "no_price", token };
+      }
+      if (solValue < residualAlertSol) {
+        // Tier 1.3 case A: true dust (< 0.005 SOL). Leave silently.
+        log("executor", `Auto-skip ${label}: residual ${solValue.toFixed(6)} SOL below dust floor (${residualAlertSol} SOL).`);
+        return { skipped: true, reason: "true_dust", token };
+      }
+      if (solValue < minSol) {
+        // Tier 1.3 case B: between dust floor and swap floor. Warn, don't swap
+        // — slippage on a 0.005–0.05 SOL position will eat more than the value.
+        log("executor_warn", `🪲 Base residual ${token.symbol || baseMint.slice(0, 8)} = ${solValue.toFixed(4)} SOL — below swap floor (${minSol} SOL). Left unwrapped. Manual review recommended.`);
+        return { skipped: true, reason: "below_swap_floor", token };
+      }
+      log("executor", `Auto-swapping ${label} ${token.symbol || baseMint.slice(0, 8)} (◎${solValue.toFixed(4)} SOL / $${token.usd?.toFixed(2) ?? "?"}) back to SOL (attempt ${attempt}/${attempts})`);
       const swapResult = await swapToken({ input_mint: baseMint, output_mint: "SOL", amount: token.balance });
       const ok = swapResult && swapResult.success !== false && !swapResult.error && (swapResult.tx || swapResult.amount_out);
       if (ok) return { swapped: true, result: swapResult, token };
@@ -680,30 +715,23 @@ export async function executeTool(name, args) {
       } else if (name === "deploy_position") {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
       } else if (name === "close_position") {
-        const hasTruePnl = result.pnl_true_usd != null;
-        const realPnlUsd = hasTruePnl ? result.pnl_true_usd : (result.pnl_usd ?? 0);
-        // Compute true USD percentage — use final_value_usd from Meteora if available
-        // since initial_value_usd is sometimes stored as SOL amount instead of USD
+        // SOL-native convention (2026-07-03): always report PnL in SOL amount + SOL-basis %.
+        // `pnl_sol` is Meteora's realized SOL delta, `pnlSolPctChange` is the SOL-basis pct.
+        // Fall back to legacy pnl_usd/pnl_pct only if SOL-native fields missing.
+        const tracked = getTrackedPosition(result.position || args.position_address);
+        const realPnlSol = result.pnl_sol != null ? Number(result.pnl_sol) : (result.pnl_usd ?? 0);
         let realPnlPct = result.pnl_pct ?? 0;
-        if (hasTruePnl && result.pnl_true_usd != null) {
-          const tracked = getTrackedPosition(result.position || args.position_address);
-          // Try multiple sources for the initial USD value, in order of reliability
-          let initialUsd = 0;
-          if (tracked?.initial_value_usd && tracked.initial_value_usd > 10) {
-            // Looks like a real USD value (>10 means it's not just the SOL amount)
-            initialUsd = tracked.initial_value_usd;
-          } else if (result.initial_value_usd && result.initial_value_usd > 10) {
-            initialUsd = result.initial_value_usd;
-          } else if (result.deposited_usd) {
-            initialUsd = result.deposited_usd;
-          } else if (tracked?.amount_sol) {
-            // Fallback: estimate from SOL amount × ~$73 (rough SOL price)
-            initialUsd = tracked.amount_sol * 73;
-          }
-          if (initialUsd > 0) realPnlPct = (result.pnl_true_usd / initialUsd) * 100;
+        // Always recompute pct on SOL basis if we have both numerator (pnl_sol) and denominator (initial_sol)
+        const initialSol = tracked?.initial_sol ?? tracked?.amount_sol ?? 0;
+        if (initialSol > 0 && result.pnl_sol != null) {
+          realPnlPct = (Number(result.pnl_sol) / initialSol) * 100;
         }
-        const pnlUnit = hasTruePnl ? "$" : "◎";
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: realPnlUsd, pnlPct: realPnlPct, reason: args.reason || null, pnlUnit }).catch(() => {});
+        notifyClose({
+          pair: result.pool_name || args.position_address?.slice(0, 8),
+          pnlSol: realPnlSol,
+          pnlPct: realPnlPct,
+          reason: args.reason || null,
+        }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
@@ -711,12 +739,18 @@ export async function executeTool(name, args) {
         }
         // Auto-swap base token back to SOL unless user said to hold (retried).
         if (!args.skip_swap && result.base_mint) {
-          const { swapped, result: swapResult } = await swapBaseToSolWithRetry(result.base_mint, "after close");
-          if (swapped) {
+          const swap = await swapBaseToSolWithRetry(result.base_mint, "after close");
+          if (swap.swapped) {
             // Tell the model the swap already happened so it doesn't call swap_token again
             result.auto_swapped = true;
             result.auto_swap_note = `Base token already auto-swapped back to SOL (${result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
-            if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
+            if (swap.result?.amount_out) result.sol_received = swap.result.amount_out;
+          } else if (swap.token) {
+            // Tier 1.3: surface WHY we skipped so the Telegram message is honest
+            // (was: auto_swapped=true OR result.base_mint was the only signal)
+            result.auto_swap_skipped = true;
+            result.auto_swap_skip_reason = swap.reason || "unknown";
+            result.auto_swap_residual_sol = swap.token.sol_value ?? null;
           }
         }
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {

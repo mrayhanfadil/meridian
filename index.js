@@ -25,7 +25,7 @@ import {
   createLiveMessage,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, updatePnlAndCheckExits, checkYieldDecay, confirmPeak, confirmTrough, registerExitSignal } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
@@ -93,8 +93,26 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
+let _liveSolPrice = 0; // cached live SOL/USD price, refreshed by getWalletBalances
+let _lastSolPriceRefresh = 0; // epoch ms — throttle SOL price refresh to every 60s
 // Exit/peak confirmation is now done by consecutive-tick counting in state.js
 // (registerExitSignal / confirmPeak), driven by the 3s RPC poller — no setTimeout rechecks.
+
+/** Refresh _liveSolPrice from wallet balances. Called periodically. */
+async function refreshSolPrice() {
+  try {
+    const w = await getWalletBalances();
+    if (w?.sol_price && w.sol_price > 0) {
+      _liveSolPrice = w.sol_price;
+      _lastSolPriceRefresh = Date.now();
+    }
+  } catch { /* silent — keep last known price */ }
+}
+
+/** Return mgmtConfig with live SOL price injected for profit-target rule. */
+function mgmtWithSolPrice() {
+  return { ...config.management, _liveSolPrice: _liveSolPrice || config.management.solUsdFallback || 150 };
+}
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
@@ -246,7 +264,13 @@ export async function runManagementCycle({ silent = false } = {}) {
     // Snapshot + load pool memory
     const positionData = positions.map((p) => {
       recordPositionSnapshot(p.pool, p);
-      return { ...p, recall: recallForPool(p.pool) };
+      // SOL-native (2026-07-03): enrich with initial_sol from state for canonical SOL-basis %.
+      const tracked = getTrackedPosition(p.position);
+      return {
+        ...p,
+        initial_sol: tracked?.initial_sol ?? tracked?.amount_sol ?? null,
+        recall: recallForPool(p.pool),
+      };
     });
 
     // JS exit checks. Management is the slow cron backstop: raise peak immediately
@@ -255,7 +279,8 @@ export async function runManagementCycle({ silent = false } = {}) {
     const exitMap = new Map();
     for (const p of positionData) {
       confirmPeak(p.position, p.pnl_pct, 1);
-      const exit = updatePnlAndCheckExits(p.position, p, config.management);
+      confirmTrough(p.position, p.pnl_pct, 1);
+      const exit = updatePnlAndCheckExits(p.position, p, mgmtWithSolPrice());
       if (exit) {
         exitMap.set(p.position, exit.reason);
         log("state", `Exit alert for ${p.pair}: ${exit.reason}`);
@@ -297,10 +322,19 @@ export async function runManagementCycle({ silent = false } = {}) {
     const reportLines = positionData.map((p) => {
       const act = actionMap.get(p.position);
       const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
-      const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
-      const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
+      // SOL-native (2026-07-03): always SOL units, recompute pct on SOL basis.
+      const val = `◎${(p.total_value_usd ?? 0).toFixed(4)}`;
+      const unclaimed = `◎${(p.unclaimed_fees_usd ?? 0).toFixed(4)}`;
+      const pnlSol = p.pnl_sol != null ? Number(p.pnl_sol) : (p.pnl_usd ?? 0);
+      // Always recompute pct on SOL basis so reported % matches the displayed ◎ value.
+      // (pnl_pct from Meteora can be mixed basis; using pnl_sol/initial_sol is canonical.)
+      const initialSol = p.initial_sol ?? 1.5; // fallback for legacy positions without initial_sol
+      const pnlPct = initialSol > 0 && pnlSol != null
+        ? (pnlSol / initialSol) * 100
+        : (p.pnl_pct ?? 0);
+      const pnlStr = `${pnlSol >= 0 ? "+" : ""}◎${pnlSol.toFixed(4)} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
+      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${pnlStr} | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
       if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
@@ -313,7 +347,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       ? needsAction.map(a => a.action === "INSTRUCTION" ? "EVAL instruction" : `${a.action}${a.reason ? ` (${a.reason})` : ""}`).join(", ")
       : "no action";
 
-    const cur = config.management.solMode ? "◎" : "$";
+    const cur = "◎"; // SOL-native (2026-07-03): always SOL units.
     mgmtReport = reportLines.join("\n\n") +
       `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
 
@@ -338,6 +372,33 @@ export async function runManagementCycle({ silent = false } = {}) {
       log("cron", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`);
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
     }
+
+    // ── Cycle summary (2026-07-05 detailed-logging patch) ─────────────
+    // Quick at-a-glance health snapshot per cycle: open positions, aggregate
+    // value, unclaimed fees, in-range count, total drawdown across all open.
+    // Trough data comes from state (confirmTrough) not from the live RPC read.
+    const summaryTotalValue = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
+    const summaryUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
+    const summaryInRange = positionData.filter((p) => p.in_range).length;
+    let summaryTrough = 0;
+    let summaryPeak = 0;
+    for (const p of positionData) {
+      const tracked = getTrackedPosition(p.position);
+      if (tracked) {
+        summaryTrough = Math.min(summaryTrough, tracked.trough_pnl_pct ?? 0);
+        summaryPeak = Math.max(summaryPeak, tracked.peak_pnl_pct ?? 0);
+      }
+    }
+    const summaryWorstCurrent = positionData.reduce(
+      (min, p) => (p.pnl_pct != null && p.pnl_pct < min ? p.pnl_pct : min),
+      0
+    );
+    log(
+      "cron",
+      `CYCLE_SUMMARY open=${positionData.length} in_range=${summaryInRange} ` +
+        `value=$${summaryTotalValue.toFixed(2)} unclaimed=$${summaryUnclaimed.toFixed(2)} ` +
+        `peak=${summaryPeak.toFixed(2)}% trough=${summaryTrough.toFixed(2)}% worst_current=${summaryWorstCurrent.toFixed(2)}%`
+    );
   } catch (error) {
     log("cron_error", `Management cycle failed: ${error.message}`);
     mgmtReport = `Management cycle failed: ${error.message}`;
@@ -375,6 +436,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
+      log("screening", `FUNNEL skip_reason=max_positions open=${prePositions.total_positions} max=${config.risk.maxPositions}`);
       appendDecision({
         type: "skip",
         actor: "SCREENER",
@@ -388,6 +450,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const isDryRun = process.env.DRY_RUN === "true";
     if (!isDryRun && preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
+      log("screening", `FUNNEL skip_reason=insufficient_sol wallet=${preBalance.sol.toFixed(3)}SOL need=${minRequired}SOL`);
       screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
       appendDecision({
         type: "skip",
@@ -422,9 +485,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
       + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
+    // Limit to 5 — preserves LLM step budget for deep research + summary instead of over-exploration
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
-    const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
+    const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 5);
     const earlyFilteredExamples = topCandidates?.filtered_examples || [];
+
+    // ── Screening funnel summary (2026-07-05 detailed-logging patch) ──
+    // Logs at-a-glance how many pools we discovered, how many cleared filters,
+    // and the top reasons for rejection. Cheap to compute (we already have
+    // the data) and makes the screening black box observable.
+    const totalDiscovered = topCandidates?.total_screened ?? "?";
+    const totalEligible = topCandidates?.candidates?.length ?? "?";
+    const examples = earlyFilteredExamples.slice(0, 3);
+    log(
+      "screening",
+      `FUNNEL discovered=${totalDiscovered} eligible=${totalEligible} ` +
+        `examples=[${examples.map((e) => `${e?.name || "?"}:${(e?.reason || "?").slice(0, 40)}`).join(" | ")}]`
+    );
 
     const allCandidates = [];
     for (const pool of candidates) {
@@ -681,6 +758,7 @@ IMPORTANT:
 
 export function startCronJobs() {
   stopCronJobs(); // stop any running tasks before (re)starting
+  refreshSolPrice(); // fetch live SOL price on startup
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
     if (_managementBusy) return;
@@ -730,13 +808,16 @@ Summarize the current portfolio health, total fees earned, and performance of al
     if (getTrackedPositions(true).length === 0) return;
     _pnlPollBusy = true;
     try {
+      // Refresh SOL price periodically (every ~60s, not every 1.5s poll)
+      if (Date.now() - _lastSolPriceRefresh > 60_000) refreshSolPrice();
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
         confirmPeak(p.position, p.pnl_pct, confirmTicks);
+        confirmTrough(p.position, p.pnl_pct, confirmTicks);
 
         // Detect an exit signal this tick (rule-based exits, then deterministic close rules).
-        const exit = updatePnlAndCheckExits(p.position, p, config.management);
+        const exit = updatePnlAndCheckExits(p.position, p, mgmtWithSolPrice());
         const closeRule = exit ? null : getDeterministicCloseRule(p, config.management);
         let signal = null, reason = null, rule = "exit";
         if (exit) { signal = exit.action; reason = exit.reason; }
@@ -745,6 +826,26 @@ Summarize the current portfolio health, total fees earned, and performance of al
         // Require N consecutive confirming ticks before acting.
         const { fire } = registerExitSignal(p.position, signal, confirmTicks);
         if (!signal || !fire) continue;
+
+        // ── Fix A: Re-verify profit target before closing ──────────────
+        // Profit target fires on a PnL snapshot, but close_position executes
+        // ~2-5s later on-chain. For volatile pools, PnL can swing below the
+        // threshold in that window, causing closes at a loss.
+        // Guard: re-fetch position PnL and only close if profit target still
+        // holds. If stale, skip → trailing TP handles it on next cycle (Fix B).
+        if (signal === "PROFIT_TARGET") {
+          const fresh = await getMyPositions({ force: true, silent: true })
+            .then(r => r?.positions?.find(pos => pos.position === p.position))
+            .catch(() => null);
+          if (fresh) {
+            const recheck = updatePnlAndCheckExits(p.position, fresh, mgmtWithSolPrice());
+            if (!recheck || recheck.action !== "PROFIT_TARGET") {
+              log("state", `[PnL poll] PROFIT_TARGET stale — PnL moved below $${config.management.profitCloseUsd ?? 5}. Deferring to trailing TP.`);
+              registerExitSignal(p.position, null, confirmTicks);
+              break;
+            }
+          }
+        }
 
         log("state", `[PnL poll] ${signal} confirmed (${confirmTicks} ticks): ${p.pair} — ${reason} — closing directly`);
         // Hold the management lock so the cron cycle can't double-act on this position.
@@ -1499,12 +1600,19 @@ async function telegramHandler(msg) {
     try {
       const { positions, total_positions } = await getMyPositions({ force: true });
       if (total_positions === 0) { await sendMessage("No open positions."); return; }
-      const cur = config.management.solMode ? "◎" : "$";
+      // SOL-native (2026-07-03): always display SOL values + SOL-basis %.
+      // `pnl_sol` field added; falls back to amount_sol if missing (transitional).
+      // SOL-basis % computed from pnl_sol/initial_sol so displayed % matches the ◎ value.
+      const cur = "◎";
       const lines = positions.map((p, i) => {
-        const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
+        const pnlSol = p.pnl_sol != null ? Number(p.pnl_sol) : (p.pnl_usd ?? 0);
+        const initialSol = p.initial_sol ?? p.amount_sol ?? 0;
+        const pctSol = initialSol > 0 ? (Number(pnlSol) / initialSol) * 100 : (p.pnl_pct ?? 0);
+        const pnl = pnlSol >= 0 ? `+${cur}${pnlSol.toFixed(4)} (${pctSol >= 0 ? "+" : ""}${pctSol.toFixed(2)}%)`
+                                : `-${cur}${Math.abs(pnlSol).toFixed(4)} (${pctSol >= 0 ? "+" : ""}${pctSol.toFixed(2)}%)`;
         const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
         const oor = !p.in_range ? " ⚠️OOR" : "";
-        return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+        return `${i + 1}. ${p.pair} | ${cur}${(p.total_value_usd ?? 0).toFixed(4)} | PnL: ${pnl} | fees: ${cur}${(p.unclaimed_fees_usd ?? 0).toFixed(4)} | ${age}${oor}`;
       });
       await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
@@ -1546,7 +1654,28 @@ async function telegramHandler(msg) {
       if (result.success) {
         const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        // SOL-native (2026-07-03): use pnl_sol if available
+        const pnlVal = result.pnl_sol ?? result.pnl_usd ?? "?";
+        // Show explicit swap status so user knows if dust got auto-swapped or left behind.
+        // Tier 1.3: distinguish true_dust / below_swap_floor / no_price honestly.
+        let swapStatus;
+        if (result.auto_swapped) {
+          swapStatus = `\nSwap: base→SOL OK (received ◎${Number(result.sol_received ?? 0).toFixed(4)})`;
+        } else if (result.auto_swap_skipped) {
+          const residualSol = Number(result.auto_swap_residual_sol ?? 0).toFixed(4);
+          const mint = (result.base_mint || "").slice(0, 8);
+          const reasonText = {
+            true_dust: `true dust (<0.005 SOL) — ${mint} left`,
+            below_swap_floor: `sub-floor residual ◎${residualSol} ${mint} — slippage>value, left`,
+            no_price: `no SOL price feed for ${mint} — retry next cycle`,
+          }[result.auto_swap_skip_reason] || `${mint} left (${result.auto_swap_skip_reason})`;
+          swapStatus = `\nSwap: skipped — ${reasonText}`;
+        } else if (result.base_mint) {
+          swapStatus = `\nSwap: skipped — base mint ${result.base_mint.slice(0,8)} left in wallet`;
+        } else {
+          swapStatus = "";
+        }
+        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ◎${pnlVal}${Number.isFinite(pnlVal)?'':'?'} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}${swapStatus}`);
       } else {
         await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
       }
@@ -1563,7 +1692,12 @@ async function telegramHandler(msg) {
       for (const pos of positions) {
         try {
           const result = await closePosition({ position_address: pos.position });
-          results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
+          if (result.success) {
+            const swapTag = result.auto_swapped ? `swapped→◎${Number(result.sol_received ?? 0).toFixed(4)}` : (result.base_mint ? `dust-left(${result.base_mint.slice(0,8)})` : "no-swap");
+            results.push(`${pos.pair}: closed [${swapTag}]`);
+          } else {
+            results.push(`${pos.pair}: failed (${result.error || "unknown"})`);
+          }
         } catch (error) {
           results.push(`${pos.pair}: failed (${error.message})`);
         }
