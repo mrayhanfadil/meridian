@@ -68,9 +68,17 @@ function setPoolCooldown(entry, hours, reason) {
   return cooldownUntil;
 }
 
-function setBaseMintCooldown(db, baseMint, hours, reason) {
+function setBaseMintCooldown(db, baseMint, hours, reason, tier = "TIMEBOX") {
   if (!baseMint) return null;
-  const newUntil = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  // PERMANENT tier uses year 9999 as the cooldown expiry. The screening layer
+  // treats any cooldown_until > now() the same way, so this is a clean way to
+  // express "block this mint forever" without adding a separate code-path or
+  // schema field. Existing 7-day chronic blacklists stay timeboxed and are
+  // overridden only by a later PERMANENT ban (since year 9999 > any future
+  // date we can compute).
+  const newUntil = tier === "PERMANENT"
+    ? new Date("9999-12-31T23:59:59Z").toISOString()
+    : new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
   const newDate = new Date(newUntil);
   for (const entry of Object.values(db)) {
     if (entry?.base_mint === baseMint) {
@@ -82,6 +90,7 @@ function setBaseMintCooldown(db, baseMint, hours, reason) {
       if (!existingDate || newDate > existingDate) {
         entry.base_mint_cooldown_until = newUntil;
         entry.base_mint_cooldown_reason = reason;
+        entry.base_mint_cooldown_tier = tier;
       }
     }
   }
@@ -358,6 +367,76 @@ export function recordPoolDeploy(poolAddress, deployData) {
             `tier1.5 rule-2: ${escalatedCooldownHours}h escalated base_mint cooldown for ${entry.base_mint.slice(0, 8)} until ${cd2} (${reason2})`,
           );
         }
+      }
+      // ── Plan A override (2026-07-06): rapid-rug detection ───────────
+      // When THIS close is itself a *rapid rug* (loss% ≤ rugEscalationPct AND
+      // minutes_held ≤ rugEscalationMaxHoldMin), ignore the 6h window and
+      // escalate to rugEscalationHours (default 48h). Catches chronic rug
+      // tokens that re-deploy same-day (world/SOL, BABYANSEM/SOL pattern).
+      // Replaces—not duplicates—rule-1, since the cooldown_until comparison
+      // in setBaseMintCooldown takes the MAX of existing and new.
+      const rugEscalationPct = Number(tier15Cfg.rugEscalationPct ?? -15);
+      const rugEscalationMaxHoldMin = Number(tier15Cfg.rugEscalationMaxHoldMin ?? 30);
+      const rugEscalationHours = Number(tier15Cfg.rugEscalationHours ?? 48);
+      const minutesHeldVal = Number(deploy.minutes_held ?? 0);
+      if (
+        rugEscalationHours > lossCooldownHours &&
+        Number.isFinite(minutesHeldVal) &&
+        minutesHeldVal > 0 &&
+        minutesHeldVal <= rugEscalationMaxHoldMin &&
+        pnlPctValue <= rugEscalationPct
+      ) {
+        const reasonA = `tier1.5/Plan-A rapid-rug (${pnlPctValue.toFixed(2)}% ≤ ${rugEscalationPct}% in ${minutesHeldVal.toFixed(1)}min → ${rugEscalationHours}h ban)`;
+        const cdA = setBaseMintCooldown(db, entry.base_mint, rugEscalationHours, reasonA);
+        if (cdA) {
+          log(
+            "pool-memory",
+            `Plan-A: ${rugEscalationHours}h rapid-rug base_mint cooldown for ${entry.base_mint.slice(0, 8)} until ${cdA} (${reasonA})`,
+          );
+        }
+      }
+    }
+  }
+
+  // ── Tier 1.D (2026-07-06, Plan D): permanent ban on first-deploy rugs ────
+  //   Trigger when ALL of:
+  //     • this is the *first ever* deploy on this base_mint (aggPriorDeploys === 0)
+  //     • the close is a rapid rug (pnl_pct ≤ permanentBanPnlPct, pnl_usd ≤ permanentBanPnlUsd)
+  //     • held ≤ permanentBanMaxHoldMin (default 60)
+  //   Effect: PERMANENT tier cooldown on the mint (year 9999 expiry). Subsequent
+  //   deploys on this mint — same pool, rotated pool, or new pool with same
+  //   base_mint — are blocked at screening time by isBaseMintOnCooldown().
+  //   aggPriorDeploys subtracts 1 from the freshly-computed aggregate because
+  //   the current deploy has already been pushed into entry.deploys.
+  const tier1DCfg = config.management.tier1DPermanentBan ?? {};
+  const tier1DEnabled = tier1DCfg.enabled !== false;
+  if (tier1DEnabled && entry.base_mint && deploy.pnl_pct != null) {
+    const banPnlPct = Number(tier1DCfg.permanentBanPnlPct ?? -15);
+    const banPnlUsd = Number(tier1DCfg.permanentBanPnlUsd ?? -5);
+    const banMaxHoldMin = Number(tier1DCfg.permanentBanMaxHoldMin ?? 60);
+    const pnlUsdVal = Number(deploy.pnl_usd ?? 0);
+    const minutesHeldVal2 = Number(deploy.minutes_held ?? 0);
+    // Count *prior* deploys across ALL pool entries sharing this base_mint,
+    // excluding the just-closed one (which is the candidate trigger).
+    let aggPriorDeploys = 0;
+    for (const e of Object.values(db)) {
+      if (!e?.base_mint || e.base_mint !== entry.base_mint) continue;
+      const ds = Array.isArray(e.deploys) ? e.deploys : [];
+      aggPriorDeploys += ds.length;
+    }
+    aggPriorDeploys = Math.max(0, aggPriorDeploys - 1);  // exclude the just-recorded close
+    const isRapidRug =
+      Number.isFinite(pnlUsdVal) && pnlUsdVal <= banPnlUsd &&
+      Number.isFinite(minutesHeldVal2) && minutesHeldVal2 > 0 && minutesHeldVal2 <= banMaxHoldMin &&
+      Number(deploy.pnl_pct) <= banPnlPct;
+    if (aggPriorDeploys === 0 && isRapidRug) {
+      const reasonD = `tier1.D PERMANENT_BAN (first deploy on mint → −${banPnlUsd}$ in ${minutesHeldVal2.toFixed(1)}min, ${Number(deploy.pnl_pct).toFixed(2)}% → year-9999 mint block)`;
+      const cdD = setBaseMintCooldown(db, entry.base_mint, 0, reasonD, "PERMANENT");
+      if (cdD) {
+        log(
+          "pool-memory",
+          `Plan-D: PERMANENT_BAN set for ${entry.name} mint ${entry.base_mint.slice(0, 8)} until ${cdD} (${reasonD})`,
+        );
       }
     }
   }

@@ -193,6 +193,33 @@ export const config = {
                               lossCooldownHours: 6,
                               lossWindowHours: 12,
                               escalatedCooldownHours: 24,
+                              // NEW (2026-07-06, Plan A override): when the just-
+                              // recorded loss is a *rapid rug* (loss% ≤ rugEscalationPct
+                              // AND minutes_held ≤ rugEscalationMaxHold), the 6h cooldown
+                              // is replaced by `rugEscalationHours` (default 48h). Catches
+                              // chronic rug tokens on the same-day re-deploy pattern that
+                              // a 6h window misses. Trigger is independent of the existing
+                              // tier1.5 rule-2 (which counts same-mint losses for the
+                              // ladder); Plan A only looks at the *shape* of this close.
+                              rugEscalationPct: -15,
+                              rugEscalationMaxHoldMin: 30,
+                              rugEscalationHours: 48,
+                            },
+    // NEW (2026-07-06, Tier 1.D): permanent ban on first-deploy rapid rugs.
+    //   Fires when ALL of:
+    //     • pnl_pct ≤ permanentBanPnlPct (default -15%)
+    //     • pnl_usd ≤ permanentBanPnlUsd (default -5) — catches big absolute rugs
+    //       like 0x/SOL ($−26) even when pnl_pct is huge negative
+    //     • minutes_held ≤ permanentBanMaxHoldMin (default 60)
+    //     • this is the *first ever* deploy on this base_mint (aggPriorDeploys === 0)
+    //   Effect: sets a year-9999 cooldown on the mint — durable across pool rotations.
+    //   Empirical (Jul 5 2026 audit): expected to block 0x, sultan, yep, SEMAN,
+    //   滑る猫, Hobbes on the next deploy without ever blocking a winner.
+    tier1DPermanentBan:    u.tier1DPermanentBan    ?? {
+                              enabled: true,
+                              permanentBanPnlPct: -15,
+                              permanentBanPnlUsd: -5,
+                              permanentBanMaxHoldMin: 60,
                             },
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
