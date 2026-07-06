@@ -91,15 +91,36 @@ import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 import { getDecisionSummary } from "./decision-log.js";
 
-// Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
-// To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
-const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
-  timeout: 5 * 60 * 1000,
-});
+// Meridian uses DIRECT DEEPSEEK as primary (user banned opencode-zen).
+// The "primaryClient" is the direct DeepSeek client. Legacy opencode-zen /
+// OpenRouter gateway code is kept below as a fallback layer (no-op when
+// DEEPSEEK_API_KEY is set and LLM_BASE_URL is unset, which is Meridian's
+// config). To re-enable a gateway as primary, set LLM_BASE_URL + LLM_API_KEY.
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
+// Secondary client for direct DeepSeek API — primary by default (Meridian uses
+// direct DeepSeek, no gateway). Kept as `deepseekClient` for legacy code paths
+// that still reference it during the opencode-zen → direct-deepseek migration.
+const DEEPSEEK_BASE = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const hasDeepSeek = !!DEEPSEEK_KEY;
+
+const primaryClient = hasDeepSeek
+  ? new OpenAI({ baseURL: DEEPSEEK_BASE, apiKey: DEEPSEEK_KEY, timeout: 20 * 1000 })
+  : new OpenAI({
+      baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
+      apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || "",
+      timeout: 20 * 1000,
+    });
+const deepseekClient = hasDeepSeek
+  ? new OpenAI({ baseURL: DEEPSEEK_BASE, apiKey: DEEPSEEK_KEY, timeout: 20 * 1000 })
+  : null;
+
+// Default model — prefers direct DeepSeek when DEEPSEEK_API_KEY is set (Meridian's
+// preferred path). Falls back to whatever LLM_MODEL says, then openrouter default.
+const DEFAULT_MODEL = hasDeepSeek
+  ? DEEPSEEK_MODEL
+  : (process.env.LLM_MODEL || "openrouter/healer-alpha");
 
 const MUTATING_TOOL_INTENTS = /\b(deploy|open position|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|add smart wallet|remove smart wallet|add wallet|remove wallet|pin|unpin|clear lesson|add lesson|set active strategy|remove strategy|add strategy|set |change |update |self.?update|pull latest|git pull|update yourself)\b/i;
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|pnl|yield|range|show positions|open positions|screen|candidate|find pool|search|research|analyze|check pool|token holders|narrative|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|list smart wallets|list blacklist|list blocked deployers|list lessons)\b/i;
@@ -145,6 +166,32 @@ function isToolChoiceRequiredError(error) {
 function isThinkingModeToolChoiceError(error) {
   const message = String(error?.message || error?.error?.message || error || "");
   return /thinking mode does not support/i.test(message) && /tool_choice/i.test(message);
+}
+
+// Some gateways (e.g. opencode-zen "Console Go") wrap tool_choice rejection as
+// "Upstream request failed" without echoing "tool_choice"/"required" in the body.
+// Detect the 400 + tool_choice=required combination as a soft signal.
+function isGatewayToolChoiceReject(error) {
+  const status = error?.status ?? error?.error?.status ?? null;
+  if (status !== 400 && status !== 422) return false;
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /upstream|provider|invalid_request/i.test(message);
+}
+
+// opencode-zen rejects tool_choice=required outright (400 "Upstream request failed").
+// The /go/v1 endpoint routes reasoning models (deepseek-v4-flash) that return
+// `reasoning_content` tokens and never produce a tool_call within max_tokens.
+// Pre-detect by base URL and force tool_choice=auto + extra headroom.
+function gatewayRequiresToolChoiceAuto() {
+  const base = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
+  return /opencode\.ai\/zen/i.test(base);
+}
+
+// Some opencode-zen models are "thinking" variants that emit reasoning_content
+// tokens and never produce a tool_call within max_tokens. Skip tool_choice
+// for them — let the model decide naturally.
+function modelUsesThinkingMode(model) {
+  return /mimo-v2\.5|mimo-v2-pro|mimo-v2-omni|kimi-k2\.7-code/i.test(model || "");
 }
 
 /**
@@ -194,10 +241,16 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     try {
       const activeModel = model || DEFAULT_MODEL;
 
-      // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
+      // Retry up to 3 times on transient provider errors (500/502/503/504/529).
+      // Meridian uses direct DeepSeek (api.deepseek.com) as the primary path.
+      // On any gateway failure, escalate to direct DeepSeek as the final fallback
+      // (different blast radius, different rate limit pool). OpenCode-zen and
+      // openrouter are NOT used in the active chain anymore — user banned opencode-zen.
+      const FALLBACK_MODEL = hasDeepSeek ? DEEPSEEK_MODEL : (activeModel || DEFAULT_MODEL);
       let response;
       let usedModel = activeModel;
+      let usedClient = primaryClient;
+      let usedBaseURL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
@@ -211,8 +264,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           };
-          if (!omitToolChoice) reqParams.tool_choice = toolChoice;
-          response = await client.chat.completions.create(reqParams);
+          // opencode-zen rejects tool_choice=required outright and the model
+          // emits reasoning_content tokens that eat the budget. For that gateway
+          // we never send tool_choice — let it decide naturally.
+          const sendToolChoice = (usedBaseURL && /opencode\.ai\/zen/i.test(usedBaseURL)) || modelUsesThinkingMode(usedModel)
+            ? false
+            : (!omitToolChoice);
+          if (sendToolChoice) reqParams.tool_choice = toolChoice;
+          response = await usedClient.chat.completions.create(reqParams);
         } catch (error) {
           if (providerMode === "system" && isSystemRoleError(error)) {
             providerMode = "user_embedded";
@@ -221,9 +280,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             attempt -= 1;
             continue;
           }
-          if (toolChoice === "required" && isToolChoiceRequiredError(error)) {
+          if (toolChoice === "required" && (isToolChoiceRequiredError(error) || isGatewayToolChoiceReject(error))) {
             toolChoice = "auto";
-            log("agent", "Provider rejected tool_choice=required — retrying with tool_choice=auto");
+            log("agent", `Provider rejected tool_choice=required (${isGatewayToolChoiceReject(error) ? "gateway-wrapped 400" : "explicit"}) — retrying with tool_choice=auto`);
             attempt -= 1;
             continue;
           }
@@ -231,6 +290,87 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             omitToolChoice = true;
             log("agent", "Provider thinking mode does not support tool_choice — retrying without it");
             attempt -= 1;
+            continue;
+          }
+          // opencode-zen returns 400 "Upstream request failed" without surfacing
+          // the underlying cause. As a last resort, retry with tool_choice stripped.
+          if (!omitToolChoice && !gatewayRequiresToolChoiceAuto() && isGatewayToolChoiceReject(error)) {
+            omitToolChoice = true;
+            log("agent", "Gateway wrapped tool_choice rejection — retrying without tool_choice");
+            attempt -= 1;
+            continue;
+          }
+          // Transient provider outage (502/503/529) → switch to fallback model
+          // on attempt 1 instead of hammering the dead upstream.
+          const status = error?.status ?? error?.error?.status ?? error?.code ?? null;
+          const errMsg = String(error?.message || error?.error?.message || error || "");
+          // 500 from opencode-zen/DeepSeek v4 returns "Internal server error" with no status
+          // code on the OpenAI client side. Treat any 5xx-shaped status OR generic 500
+          // message as transient so the fallback chain (mimo-v2.5 → direct DeepSeek) engages.
+          const is5xx = status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
+          const isTransient = is5xx
+            || /temporarily unavailable|failover_exhausted|server_error|internal server error|bad gateway|service unavailable|ECONNRESET|ETIMEDOUT|timed out|request timeout|upstream|aborted|hang up|socket hang up/i.test(errMsg)
+            || error?.code === "ECONNRESET" || error?.code === "ETIMEDOUT" || error?.code === "ENOTFOUND" || error?.code === "ECONNREFUSED";
+          if (isTransient) {
+            // Attempt 0: gateway primary failed → jump straight to direct DeepSeek
+            // (different blast radius). Skipping same-gateway retry because most
+            // failures on Meridian's preferred opencode-zen route were family-wide.
+            if (attempt === 0 && hasDeepSeek && usedClient !== deepseekClient) {
+              usedClient = deepseekClient;
+              usedBaseURL = DEEPSEEK_BASE;
+              usedModel = DEEPSEEK_MODEL;
+              omitToolChoice = true;
+              log("agent", `Provider transient error ${status || errMsg} — escalating to direct DeepSeek (${DEEPSEEK_MODEL}) (attempt 1/3)`);
+              continue;
+            }
+            // Attempt 0 with no direct DeepSeek available → fall back to a different model
+            // on the same gateway, in case the upstream issue was model-specific.
+            if (attempt === 0 && usedModel !== FALLBACK_MODEL) {
+              usedModel = FALLBACK_MODEL;
+              log("agent", `Provider transient error ${status || errMsg} — switching to fallback ${FALLBACK_MODEL} (attempt 1/3)`);
+              continue;
+            }
+            // Attempt 1: gateway fallback failed → escalate to direct DeepSeek
+            if (attempt === 1 && hasDeepSeek && usedClient !== deepseekClient) {
+              usedClient = deepseekClient;
+              usedBaseURL = DEEPSEEK_BASE;
+              usedModel = DEEPSEEK_MODEL;
+              omitToolChoice = true;
+              log("agent", `Fallback ${usedModel} also failed — escalating to direct DeepSeek (${DEEPSEEK_MODEL}) (attempt 2/3)`);
+              await new Promise((r) => setTimeout(r, 5000));
+              continue;
+            }
+            if (attempt < 2) {
+              const wait = (attempt + 1) * 5000;
+              log("agent", `Provider transient error ${status || errMsg} — retrying in ${wait / 1000}s (attempt ${attempt + 2}/3)`);
+              await new Promise((r) => setTimeout(r, wait));
+              continue;
+            }
+          }
+          // Rate limit (429) on the fallback model — back off and let the
+          // primary model recover. Don't burn all 3 attempts on the same limit.
+          const isRateLimit = status === 429
+            || /rate limit exceeded|too many requests/i.test(errMsg)
+            || error?.code === "rate_limit_exceeded";
+          if (isRateLimit && attempt < 2) {
+            const wait = 30 * 1000;
+            log("agent", `Rate limited on ${usedModel} (${status || errMsg}) — backing off ${wait / 1000}s (attempt ${attempt + 2}/3)`);
+            await new Promise((r) => setTimeout(r, wait));
+            // If primary was already retried and failed, escalate to direct DeepSeek now.
+            if (attempt === 0 && hasDeepSeek && usedClient !== deepseekClient) {
+              usedClient = deepseekClient;
+              usedBaseURL = DEEPSEEK_BASE;
+              usedModel = DEEPSEEK_MODEL;
+              omitToolChoice = true;
+              log("agent", `Escalating to direct DeepSeek (${DEEPSEEK_MODEL}) after rate-limit backoff`);
+              attempt += 1; // count this escalation
+            } else {
+              // Otherwise switch back to primary in case it has recovered
+              if (usedModel !== activeModel) {
+                usedModel = activeModel;
+                log("agent", `Switching back to primary model ${activeModel}`);
+              }
+            }
             continue;
           }
           throw error;

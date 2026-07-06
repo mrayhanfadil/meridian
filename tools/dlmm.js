@@ -25,7 +25,7 @@ import {
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
-import { normalizeMint } from "./wallet.js";
+import { normalizeMint, getWalletBalances } from "./wallet.js";
 import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
@@ -839,6 +839,35 @@ export async function deployPosition({
 
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
+    // ── Deploy-side metrics (2026-07-05 detailed-logging patch) ──
+    // Capture gas + slippage at deploy-time so we can audit entry costs
+    // and detect "phantom deploys" where on-chain deposit < expected.
+    //
+    // Gas estimation: Solana priority-fee market is volatile, but a fresh
+    // signature costs ~5000 lamports. We use 0.000005 SOL/sig as a conservative
+    // floor; the actual figure can be 2-10x higher when priority fees are set.
+    // For exact gas, parse the tx meta.fee + CU consumption — out of scope here.
+    const estimatedGasSol = txHashes.length * 0.000005;
+    // Try live SOL price from getWalletBalances; fallback to static config.
+    let solUsdAtEntry = config.management?.solUsdFallback ?? 150;
+    try {
+      const w = await getWalletBalances();
+      if (w?.sol_price && w.sol_price > 0) solUsdAtEntry = w.sol_price;
+    } catch { /* keep fallback */ }
+    const expectedValueUsd = finalAmountY * solUsdAtEntry;
+    const entrySlippagePct =
+      initial_value_usd != null && expectedValueUsd > 0
+        ? ((expectedValueUsd - initial_value_usd) / expectedValueUsd) * 100
+        : null;
+    if (entrySlippagePct != null) {
+      log(
+        "deploy",
+        `Entry slippage: expected $${expectedValueUsd.toFixed(2)} vs on-chain deposit ${
+          initial_value_usd?.toFixed(2) ?? "?"
+        } → ${entrySlippagePct >= 0 ? "+" : ""}${entrySlippagePct.toFixed(2)}% (gas ~${estimatedGasSol.toFixed(6)} SOL across ${txHashes.length} tx)`
+      );
+    }
+
     _positionsCacheAt = 0;
     const signalSnapshot = config.darwin?.enabled
       ? getAndClearStagedSignals(pool_address, baseMint)
@@ -857,6 +886,9 @@ export async function deployPosition({
       amount_x: finalAmountX,
       active_bin: activeBin.binId,
       initial_value_usd,
+      entry_sol_usd: solUsdAtEntry,
+      entry_gas_sol: estimatedGasSol,
+      entry_slippage_pct: entrySlippagePct,
       signal_snapshot: signalSnapshot,
       entry_mcap,
       entry_tvl,
@@ -997,6 +1029,8 @@ export async function getPositionPnl({ pool_address, position_address }) {
     const derivedPnlPct = deriveOpenPnlPct(p, solMode);
     return {
       pnl_usd:           roundNum(solMode ? p.pnlSol : p.pnlUsd, 4),
+      // SOL-native (2026-07-03): alias field.
+      pnl_sol:           roundNum(solMode ? p.pnlSol : p.pnlUsd, 4),
       pnl_pct:           roundNum(reportedPnlPct ?? derivedPnlPct ?? 0, 2),
       current_value_usd: roundNum(currentValue, 4),
       unclaimed_fee_usd: roundNum(unclaimedValue, 4),
@@ -1414,6 +1448,8 @@ export async function getWalletPositions({ wallet_address }) {
         unclaimed_fees_usd: roundNum(unclaimedValue, 4),
         total_value_usd:    roundNum(currentValue, 4),
         pnl_usd:            roundNum(p ? (solMode ? p.pnlSol : p.pnlUsd) : 0, 4),
+        // SOL-native (2026-07-03): alias field for downstream consumers (always SOL when solMode).
+        pnl_sol:            roundNum(p ? (solMode ? p.pnlSol : p.pnlUsd) : 0, 4),
         pnl_pct:            roundNum(reportedPnlPct ?? derivedPnlPct ?? 0, 2),
         age_minutes:        p?.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
       };
@@ -1609,8 +1645,6 @@ export async function closePosition({ position_address, reason }) {
         };
       }
 
-      recordClose(position_address, reason || "agent decision");
-
       if (tracked) {
         const deployedAt = new Date(tracked.deployed_at).getTime();
         const minutesHeld = Math.floor((Date.now() - deployedAt) / 60000);
@@ -1695,6 +1729,22 @@ export async function closePosition({ position_address, reason }) {
           ...exitMarket,
         });
 
+        recordClose(position_address, reason || "agent decision", {
+          pnl_sol: config.management.solMode ? pnlUsd : null,
+          pnl_usd: config.management.solMode ? null : pnlUsd,
+          pnl_pct: pnlPct,
+          initial_value_usd: initialUsd,
+          final_value_usd: finalValueUsd,
+          fees_usd: feesUsd,
+          slippage_pct:
+            initialUsd > 0 && finalValueUsd > 0
+              ? ((initialUsd - finalValueUsd) / initialUsd) * 100
+              : null,
+          trough_pnl_pct: tracked?.trough_pnl_pct ?? null,
+          peak_pnl_pct: tracked?.peak_pnl_pct ?? null,
+          source: "meteora_api",
+        });
+
         appendDecision({
           type: "close",
           actor: "MANAGER",
@@ -1725,6 +1775,8 @@ export async function closePosition({ position_address, reason }) {
           claim_txs: claimTxHashes,
           close_txs: closeTxHashes,
           txs: txHashes,
+          // SOL-native (2026-07-03): pnl_sol always provided; pnl_usd/pnl_pct kept for backward compat.
+          pnl_sol: pnlUsd,
           pnl_usd: pnlUsd,
           pnl_pct: pnlPct,
           pnl_true_usd: pnlTrueUsd,
@@ -1741,6 +1793,11 @@ export async function closePosition({ position_address, reason }) {
         summary: "Relay closed position",
         reason: reason || "agent decision",
         metrics: {},
+      });
+
+      recordClose(position_address, reason || "agent decision", {
+        // Relay fallback path — no Meteora metrics available, mark source.
+        source: "relay_fallback",
       });
 
       return {
@@ -1870,7 +1927,126 @@ export async function closePosition({ position_address, reason }) {
       };
     }
 
-    recordClose(position_address, reason || "agent decision");
+    // ── Capture intra-trade metrics + wallet snapshot (2026-07-05 patch) ──
+    // Pull the deepest drawdown and peak from tracked state, plus a fresh
+    // wallet balance so we know the actual SOL bank after close settles.
+    let troughPct = null;
+    let peakPct = null;
+    let walletSolAfter = null;
+    let walletUsdAfter = null;
+    // FIX (2026-07-05): declare pnl vars BEFORE first use in recordClose (TDZ bug —
+    // previously declared after this call site, causing ReferenceError and silently
+    // skipping the close notification via notifyClose in executor.js).
+    let pnlUsd = 0;
+    let pnlTrueUsd = 0;
+    let pnlPct = 0;
+    let finalValueUsd = 0;
+    let initialUsd = 0;
+    let feesUsd = tracked?.total_fees_claimed_usd || 0;
+    try {
+      const trackedForMetrics = getTrackedPosition(position_address);
+      if (trackedForMetrics) {
+        troughPct = trackedForMetrics.trough_pnl_pct ?? null;
+        peakPct = trackedForMetrics.peak_pnl_pct ?? null;
+      }
+    } catch {}
+    try {
+      const w = await getWalletBalances();
+      walletSolAfter = w?.sol ?? null;
+      const solUsd = w?.sol_price ?? config.management?.solUsdFallback ?? 150;
+      walletUsdAfter = walletSolAfter != null ? walletSolAfter * solUsd : null;
+    } catch (e) {
+      log("close_warn", `Wallet balance fetch failed: ${e.message}`);
+    }
+
+    // ── Tier 1.7: onchain fallback when Meteora API returns unusable metrics ──
+    // Bug surfaced Jul 5 2026 audit: when the Meteora /positions/{addr}/pnl
+    // endpoint doesn't find our position (frequent for state-sync closes,
+    // relay paths, or freshly-rolled DLMM pools), the close-metrics code
+    // path defaulted to pnl_sol=0, pnl_pct=0 — which then propagated to
+    // pool-memory's pnl_pct=0, hiding real losses (e.g. NEIL#4 -$117,
+    // record showed 0). This block computes a ground-truth PnL directly
+    // from the close transaction's pre/post SOL balances of our wallet,
+    // and overrides the metrics when Meteora gave us nothing usable.
+    let onchainPnlSol = null;
+    let onchainPnlPct = null;
+    try {
+      const conn = getConnection();
+      // The last close signature is the canonical "final" close tx.
+      const lastCloseSig = Array.isArray(closeTxHashes) && closeTxHashes.length > 0
+        ? closeTxHashes[closeTxHashes.length - 1]
+        : null;
+      if (lastCloseSig && conn) {
+        const tx = await conn.getTransaction(lastCloseSig, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0,
+        }).catch(() => null);
+        if (tx && tx.meta) {
+          const walletPk = (typeof wallet !== "undefined" && wallet?.publicKey)
+            ? wallet.publicKey.toBase58()
+            : (process.env.WALLET_PUBKEY || "");
+          const keys = tx.transaction.message.accountKeys || [];
+          const ix = keys.findIndex((k) => {
+            const pk = typeof k === "string" ? k : (k?.pubkey?.toBase58?.() || k?.pubkey || "");
+            return pk === walletPk;
+          });
+          if (ix >= 0 && Number.isFinite(tx.meta.preBalances?.[ix]) && Number.isFinite(tx.meta.postBalances?.[ix])) {
+            const deltaLamports = tx.meta.postBalances[ix] - tx.meta.preBalances[ix];
+            // Negative fee component of the SOL delta is just tx fee. The
+            // full delta already includes the principal recovery, fees earned,
+            // IL, and fee paid. That's our ground-truth wallet delta.
+            onchainPnlSol = deltaLamports / 1e9;
+            const deployedSol = Number(tracked?.amount_sol || 0);
+            if (Number.isFinite(deployedSol) && deployedSol > 0) {
+              // Pct relative to what we put in. Negative means we got back
+              // less than deployed (after pool swapout legs).
+              onchainPnlPct = (onchainPnlSol / deployedSol) * 100;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      log("close_warn", `Tier 1.7 onchain PnL fallback failed: ${e?.message || e}`);
+    }
+
+    // Decide which metrics are authoritative. Override Meteora's zero when:
+    //   - we successfully fetched an onchain delta, AND
+    //   - Meteora gave us a 0 pnl_pct (the silent-failure signature).
+    const meteoraHadRealPnl = Math.abs(Number(pnlPct || 0)) > 1e-6 ||
+                               Math.abs(Number(pnlUsd || 0)) > 0.001;
+    let effectivePnlSol, effectivePnlPct, effectiveSource;
+    if (!meteoraHadRealPnl && onchainPnlSol != null && Number.isFinite(onchainPnlSol)) {
+      effectivePnlSol = config.management.solMode ? onchainPnlSol : (onchainPnlSol * (walletSolAfter ? (walletUsdAfter/walletSolAfter) : (config.management?.solUsdFallback ?? 150)));
+      effectivePnlPct = onchainPnlPct != null ? onchainPnlPct : pnlPct;
+      effectiveSource = "onchain_fallback";
+      log(
+        "close_info",
+        `Tier 1.7 onchain fallback engaged for ${position_address.slice(0, 8)}: pnl_sol=${onchainPnlSol.toFixed(4)}, pnl_pct=${onchainPnlPct?.toFixed(2) ?? "n/a"}%`,
+      );
+    } else {
+      effectivePnlSol = config.management.solMode ? pnlUsd : null;
+      effectivePnlPct = pnlPct;
+      effectiveSource = "meteora_api";
+    }
+
+    recordClose(position_address, reason || "agent decision", {
+      pnl_sol: effectivePnlSol,
+      pnl_usd: config.management.solMode ? null : pnlUsd,
+      pnl_pct: effectivePnlPct,
+      initial_value_usd: initialUsd,
+      final_value_usd: finalValueUsd,
+      fees_usd: feesUsd,
+      slippage_pct:
+        initialUsd > 0 && finalValueUsd > 0
+          ? ((initialUsd - finalValueUsd) / initialUsd) * 100
+          : null,
+      trough_pnl_pct: troughPct,
+      peak_pnl_pct: peakPct,
+      wallet_sol_after: walletSolAfter,
+      wallet_usd_after: walletUsdAfter,
+      source: effectiveSource,
+      onchain_pnl_sol: onchainPnlSol,
+    });
 
     // Record performance for learning
     if (tracked) {
@@ -1892,12 +2068,8 @@ export async function closePosition({ position_address, reason }) {
       };
 
       // Fetch closed PnL from API — authoritative source after withdrawal settles
-      let pnlUsd = 0;
-      let pnlTrueUsd = 0;
-      let pnlPct = 0;
-      let finalValueUsd = 0;
-      let initialUsd = 0;
-      let feesUsd = tracked.total_fees_claimed_usd || 0;
+      // (pnlUsd, pnlTrueUsd, pnlPct, finalValueUsd, initialUsd, feesUsd
+      //  declared earlier — see TDZ fix 2026-07-05)
       try {
         const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
         for (let attempt = 0; attempt < 6; attempt++) {
@@ -2029,6 +2201,8 @@ export async function closePosition({ position_address, reason }) {
         claim_txs: claimTxHashes,
         close_txs: closeTxHashes,
         txs: txHashes,
+        // SOL-native (2026-07-03): pnl_sol always provided; pnl_usd/pnl_pct kept for backward compat.
+        pnl_sol: pnlUsd,
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
         pnl_true_usd: pnlTrueUsd,
@@ -2045,6 +2219,11 @@ export async function closePosition({ position_address, reason }) {
       summary: "Closed position",
       reason: reason || "agent decision",
       metrics: {},
+    });
+
+    recordClose(position_address, reason || "agent decision", {
+      // Local close fallback path — no tracked record so no Meteora metrics
+      source: "local_fallback",
     });
 
     return {

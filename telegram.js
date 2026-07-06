@@ -483,17 +483,20 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, reason, pnlUnit }) {
-  const isNeg = pnlUsd < 0;
+export async function notifyClose({ pair, pnlSol, pnlPct, pnlUsd, pnlUnit, reason }) {
+  // SOL-native convention (2026-07-03): always display SOL value + SOL-basis percentage.
+  // Fall back to legacy pnlUsd only if pnlSol missing (transitional safety).
+  const solValue = pnlSol != null ? Number(pnlSol) : (pnlUsd != null ? Number(pnlUsd) : 0);
+  const pctValue = Math.abs(Number(pnlPct ?? 0));
+  const isNeg = solValue < 0;
   const sign = isNeg ? "-" : "+";
-  const absPnl = Math.abs(pnlUsd ?? 0);
-  const absPct = Math.abs(pnlPct ?? 0);
-  const unit = pnlUnit || "$";
+  const absSol = Math.abs(solValue);
+  const unit = "◎"; // SOL-native — never USD
   const escapedReason = reason ? reason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "";
   const reasonLine = escapedReason ? `\nReason: ${escapedReason}` : "";
   await sendHTML(
     `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}${unit}${absPnl.toFixed(2)} (${isNeg ? "-" : "+"}${absPct.toFixed(2)}%)${reasonLine}`
+    `PnL: ${sign}${unit}${absSol.toFixed(4)} (${isNeg ? "-" : "+"}${pctValue.toFixed(2)}%)${reasonLine}`
   );
 }
 

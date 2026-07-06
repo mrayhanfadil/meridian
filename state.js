@@ -73,6 +73,15 @@ export function trackPosition({
   entry_tvl = null,
   entry_volume = null,
   entry_holders = null,
+  // ── Deploy-side metrics (2026-07-05 detailed-logging patch) ──
+  // entry_sol_usd      — SOL price captured at deploy time, used to
+  //                       compute entry value independently from Meteora API.
+  // entry_gas_sol      — total lamports consumed by the deploy transaction(s).
+  // entry_slippage_pct — % gap between expected deploy value (amount_sol * SOL
+  //                       price) and actual on-chain deposit value (initial_value_usd).
+  entry_sol_usd = null,
+  entry_gas_sol = null,
+  entry_slippage_pct = null,
 }) {
   const state = load();
   state.positions[position] = {
@@ -83,6 +92,9 @@ export function trackPosition({
     bin_range,
     amount_sol,
     amount_x,
+    // SOL-native convention (2026-07-03): store initial_sol explicitly as the canonical
+    // denominator for SOL-basis PnL %. Falls back to amount_sol if caller didn't pass.
+    initial_sol: amount_sol,
     active_bin_at_deploy: active_bin,
     bin_step,
     volatility,
@@ -94,6 +106,9 @@ export function trackPosition({
     entry_tvl,
     entry_volume,
     entry_holders,
+    entry_sol_usd,
+    entry_gas_sol,
+    entry_slippage_pct,
     signal_snapshot: signal_snapshot || null,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
@@ -107,6 +122,11 @@ export function trackPosition({
     pending_peak_pnl_pct: null,
     pending_peak_confirm_count: 0,
     pending_peak_started_at: null,
+    // Trough (deepest intra-trade drawdown) — set by confirmTrough()
+    trough_pnl_pct: 0,
+    pending_trough_pnl_pct: null,
+    pending_trough_confirm_count: 0,
+    pending_trough_started_at: null,
     pending_exit_action: null,
     pending_exit_count: 0,
     pending_exit_started_at: null,
@@ -114,7 +134,7 @@ export function trackPosition({
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
   save(state);
-  log("state", `Tracked new position: ${position} in pool ${pool}`);
+  log("state", `Tracked new position: ${position} in pool ${pool}` + (entry_gas_sol != null ? ` (gas=${entry_gas_sol.toFixed(6)} SOL)` : ""));
 }
 
 /**
@@ -183,17 +203,80 @@ function pushEvent(state, event) {
 
 /**
  * Mark a position as closed.
+ *
+ * `metrics` (optional) — authoritative on-chain figures captured by the close
+ * path. We persist them in a structured `close_metrics` field so we can later
+ * audit slippage, hidden losses, and per-trade SOL flow without scraping notes.
+ *
+ * Accepted keys (all optional):
+ *   pnl_sol             — net PnL denominated in SOL (already fee-net)
+ *   pnl_usd             — net PnL denominated in USD (raw)
+ *   pnl_pct             — net PnL as % of deploy
+ *   initial_value_usd   — deposit value at close-time, USD
+ *   final_value_usd     — withdrawal value at close-time, USD
+ *   fees_usd            — fees earned during the position lifetime, USD
+ *   slippage_pct        — % slippage between ideal exit and actual received
+ *   source              — "meteora_api" | "cache_fallback" | "unknown"
+ *   wallet_sol_after    — wallet SOL balance immediately after close
+ *   wallet_usd_after    — wallet USD value immediately after close (using live SOL price)
+ *   trough_pnl_pct      — deepest intra-trade drawdown seen before close
+ *   peak_pnl_pct        — highest intra-trade gain seen before close
  */
-export function recordClose(position_address, reason) {
+export function recordClose(position_address, reason, metrics) {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
   pos.closed = true;
   pos.closed_at = new Date().toISOString();
+
+  // Persist structured close metrics when caller provides them. Keep this
+  // additive — older positions continue to render via the notes-only path.
+  if (metrics && typeof metrics === "object") {
+    const clean = {};
+    for (const k of [
+      "pnl_sol",
+      "pnl_usd",
+      "pnl_pct",
+      "initial_value_usd",
+      "final_value_usd",
+      "fees_usd",
+      "slippage_pct",
+      "wallet_sol_after",
+      "wallet_usd_after",
+      "trough_pnl_pct",
+      "peak_pnl_pct",
+      "source",
+    ]) {
+      if (metrics[k] !== undefined && metrics[k] !== null && Number.isFinite(metrics[k])) {
+        clean[k] = metrics[k];
+      } else if (k === "source" && typeof metrics[k] === "string") {
+        clean[k] = metrics[k];
+      }
+    }
+    if (Object.keys(clean).length > 0) {
+      pos.close_metrics = clean;
+      pos.close_metrics_recorded_at = new Date().toISOString();
+    }
+  }
+
   pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
-  pushEvent(state, { action: "close", position: position_address, pool_name: pos.pool_name || pos.pool, reason });
+  pushEvent(state, {
+    action: "close",
+    position: position_address,
+    pool_name: pos.pool_name || pos.pool,
+    reason,
+    metrics: pos.close_metrics || null,
+  });
   save(state);
-  log("state", `Position ${position_address} marked closed: ${reason}`);
+  log(
+    "state",
+    `Position ${position_address} marked closed: ${reason}` +
+      (pos.close_metrics?.pnl_sol != null
+        ? ` | pnl_sol=${pos.close_metrics.pnl_sol.toFixed(4)} pnl_pct=${
+            pos.close_metrics.pnl_pct != null ? pos.close_metrics.pnl_pct.toFixed(2) : "n/a"
+          }% source=${pos.close_metrics.source || "unknown"}`
+        : "")
+  );
 }
 
 /**
@@ -260,12 +343,57 @@ export function confirmPeak(position_address, candidatePnlPct, confirmTicks = 2)
 }
 
 /**
- * Consecutive-tick confirmation for an exit signal. The fast poller calls this every
- * tick with the exit action string detected this poll (or null when no exit). An exit
- * only fires after `confirmTicks` consecutive polls report the SAME action — so a single
- * noisy tick can't close a position. Streak resets whenever the signal clears or changes.
- * Returns { fire, action, count }.
+ * Trough (lowest PnL ever seen) tracking with consecutive-tick confirmation.
+ * Mirror of confirmPeak() but for drawdown. We use the SAME confirmTicks so
+ * intra-trade drawdown visibility has the same noise-filtering as peak tracking.
+ * Persisted as `trough_pnl_pct` (initial value 0 means "no drawdown yet").
  */
+export function confirmTrough(position_address, candidatePnlPct, confirmTicks = 2) {
+  if (candidatePnlPct == null) return false;
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.closed) return false;
+
+  // Only meaningful for negative pnl — positive pnl doesn't make trough deeper.
+  if (candidatePnlPct >= 0) return false;
+
+  const currentTrough = pos.trough_pnl_pct ?? 0;
+  // Trough only moves DOWN. candidatePnlPct < currentTrough means new low.
+  if (candidatePnlPct >= currentTrough) {
+    if (pos.pending_trough_pnl_pct != null) {
+      pos.pending_trough_pnl_pct = null;
+      pos.pending_trough_confirm_count = 0;
+      save(state);
+    }
+    return false;
+  }
+
+  // Same-or-lower candidate as the pending one → another confirming tick.
+  if (pos.pending_trough_pnl_pct != null && candidatePnlPct <= pos.pending_trough_pnl_pct) {
+    pos.pending_trough_confirm_count = (pos.pending_trough_confirm_count ?? 1) + 1;
+    pos.pending_trough_pnl_pct = candidatePnlPct;
+  } else {
+    pos.pending_trough_pnl_pct = candidatePnlPct;
+    pos.pending_trough_confirm_count = 1;
+    pos.pending_trough_started_at = new Date().toISOString();
+  }
+
+  if (pos.pending_trough_confirm_count >= confirmTicks) {
+    pos.trough_pnl_pct = Math.min(currentTrough, pos.pending_trough_pnl_pct);
+    pos.pending_trough_pnl_pct = null;
+    pos.pending_trough_confirm_count = 0;
+    pos.pending_trough_started_at = null;
+    save(state);
+    log(
+      "state",
+      `Position ${position_address} trough PnL confirmed at ${pos.trough_pnl_pct.toFixed(2)}% (${confirmTicks} ticks)`
+    );
+    return true;
+  }
+
+  save(state);
+  return false;
+}
 export function registerExitSignal(position_address, signal, confirmTicks = 2) {
   const state = load();
   const pos = state.positions[position_address];
@@ -392,32 +520,75 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     };
   }
 
-  // ── Trailing TP (time-decay) ────────────────────────────────────
-  if (!pnl_pct_suspicious && pos.trailing_active) {
-    // Time-decay trailing drop: young positions = tight, old positions = wide
-    let effectiveDropPct = mgmtConfig.trailingDropPct;
-    if (positionData?.age_minutes != null) {
-      if (positionData.age_minutes < 30) {
-        effectiveDropPct = mgmtConfig.trailingDropPct * 0.6; // 1.5% if base=2.5%
-      } else if (positionData.age_minutes < 90) {
-        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
-      } else {
-        effectiveDropPct = mgmtConfig.trailingDropPct * 1.4; // 3.5% if base=2.5%
+  // ── Absolute USD profit close (PRIORITY over trailing TP) ──────
+  // Closes when realized PnL (USD) >= profitCloseUsd. Solves "trailing TP overcuts noise"
+  // by letting winners run until a real dollar target is hit.
+  if (
+    !pnl_pct_suspicious &&
+    mgmtConfig.profitCloseEnabled &&
+    mgmtConfig.profitCloseUsd != null &&
+    positionData?.pnl_usd != null
+  ) {
+    // In solMode:true, positionData.pnl_usd is SOL-denominated; convert to USD for the rule.
+    // Use live SOL price if available (mgmtConfig._liveSolPrice), else fallback to static.
+    const solPrice = mgmtConfig._liveSolPrice || mgmtConfig.solUsdFallback || 150;
+    const pnlUsdForRule = mgmtConfig.solMode
+      ? positionData.pnl_usd * solPrice
+      : positionData.pnl_usd;
+    if (pnlUsdForRule >= mgmtConfig.profitCloseUsd) {
+      return {
+        action: "PROFIT_TARGET",
+        reason: `Profit target hit: $${pnlUsdForRule.toFixed(2)} >= $${mgmtConfig.profitCloseUsd} (PnL ${currentPnlPct?.toFixed(2) ?? "?"}%)`,
+        needs_confirmation: true,
+        pnl_usd: pnlUsdForRule,
+        target_usd: mgmtConfig.profitCloseUsd,
+        current_pnl_pct: currentPnlPct,
+      };
+    }
+  }
+
+  // ── Trailing TP (time-decay, breakeven-clamped) ──────────────────
+// Trigger: 1% (early activation — captures spike early).
+// Drop: 2.5% base, scaled by tier (0.5x/0.75x/1.0x).
+// Clamp: trailing exit is NEVER below 0% (breakeven floor).
+//         If drop calculation yields close < 0%, snap to 0%.
+//         Replaces the historical -1.5% leak that came from
+//         trigger=1% drop=2.5% without a floor.
+    if (!pnl_pct_suspicious && pos.trailing_active && currentPnlPct != null) {
+      // Time-decay trailing drop (3-tier age-aware):
+      //   <60m  (young):   0.5× base — 1.25% drop, raw close >= trigger - 1.25%
+      //   60-240m (mid):   0.75× base — 1.875% drop, raw close >= trigger - 1.875%
+      //   >240m (mature):  1.0× base — 2.5% drop, raw close >= trigger - 2.5%
+      //   All tiers clamped at 0% breakeven floor.
+      let effectiveDropPct = mgmtConfig.trailingDropPct;
+      if (positionData?.age_minutes != null) {
+        if (positionData.age_minutes < 60) {
+          effectiveDropPct = mgmtConfig.trailingDropPct * 0.5; // 1.25% if base=2.5%
+        } else if (positionData.age_minutes < 240) {
+          effectiveDropPct = mgmtConfig.trailingDropPct * 0.75; // 1.875% if base=2.5%
+        } else {
+          effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
+        }
+      }
+      const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
+      if (dropFromPeak >= effectiveDropPct) {
+        const rawClosePct = pos.peak_pnl_pct - effectiveDropPct;
+        // Clamp to breakeven floor: trailing TP can never close at a loss.
+        const breakevenFloorPct = 0;
+        const finalClosePct = Math.max(rawClosePct, breakevenFloorPct);
+        return {
+          action: "TRAILING_TP",
+          reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%]; close clamped to breakeven floor ${breakevenFloorPct}%)`,
+          needs_confirmation: true,
+          peak_pnl_pct: pos.peak_pnl_pct,
+          current_pnl_pct: currentPnlPct,
+          drop_from_peak_pct: dropFromPeak,
+          effective_drop_pct: effectiveDropPct,
+          final_close_pct: finalClosePct,
+          floor_clamped: finalClosePct > rawClosePct,
+          };
       }
     }
-    const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
-    if (dropFromPeak >= effectiveDropPct) {
-      return {
-        action: "TRAILING_TP",
-        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%])`,
-        needs_confirmation: true,
-        peak_pnl_pct: pos.peak_pnl_pct,
-        current_pnl_pct: currentPnlPct,
-        drop_from_peak_pct: dropFromPeak,
-        effective_drop_pct: effectiveDropPct,
-        };
-        }
-  }
 
   // ── Out of range too long ──────────────────────────────────────
   if (pos.out_of_range_since) {

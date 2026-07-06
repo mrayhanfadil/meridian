@@ -70,14 +70,22 @@ function setPoolCooldown(entry, hours, reason) {
 
 function setBaseMintCooldown(db, baseMint, hours, reason) {
   if (!baseMint) return null;
-  const cooldownUntil = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  const newUntil = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  const newDate = new Date(newUntil);
   for (const entry of Object.values(db)) {
     if (entry?.base_mint === baseMint) {
-      entry.base_mint_cooldown_until = cooldownUntil;
-      entry.base_mint_cooldown_reason = reason;
+      // Take the MAX of existing and new cooldown — never shorten an active ban.
+      // This prevents a short "repeat deploys (2x)" cooldown from overwriting a
+      // longer "chronic underperformance" cooldown that was set for the same mint.
+      const existing = entry.base_mint_cooldown_until;
+      const existingDate = existing ? new Date(existing) : null;
+      if (!existingDate || newDate > existingDate) {
+        entry.base_mint_cooldown_until = newUntil;
+        entry.base_mint_cooldown_reason = reason;
+      }
     }
   }
-  return cooldownUntil;
+  return newUntil;
 }
 
 // ─── Write ─────────────────────────────────────────────────────
@@ -169,6 +177,72 @@ export function recordPoolDeploy(poolAddress, deployData) {
     entry.base_mint = deployData.base_mint;
   }
 
+  // Chronic-failure blacklist: block tokens with severe historical underperformance.
+  // Replaces ad-hoc cooldowns that never fire on tokens like Goblin (11 deploys, 36% WR).
+  // Triggers when total_deploys >= minSamples AND (win_rate < 40% OR avg_pnl < -1%).
+  //
+  // Aggregation note (added 2026-07-05): the same base_mint can have multiple pool
+  // entries (different fee tiers / bin_steps), and per-pool deploys were undercounting
+  // (e.g. BABYANSEM-SOL: 3+4 deploys, neither crosses the 5-deploy threshold alone).
+  // Aggregate deploy count + win rate + avg PnL across all pool entries sharing this
+  // base_mint before evaluating the criteria.
+  const chronicBlacklistConfig = config.management.chronicBlacklist ?? {};
+  const chronicEnabled = chronicBlacklistConfig.enabled !== false; // default on
+  const chronicMinSamples = chronicBlacklistConfig.minSamples ?? 5;
+  const chronicMaxWinRate = chronicBlacklistConfig.maxWinRate ?? 40;        // percentage
+  const chronicMaxAvgPnl = chronicBlacklistConfig.maxAvgPnlPct ?? -1;      // percentage
+  // NEW (2026-07-05): cumulative USD loss threshold — catches high-volume losers
+  // whose WR/avgPnl hide small per-trade losses (e.g. world-SOL: 61% WR, avg +0.x%,
+  // but -0.091 SOL cumulative = ~-$7.50 across 31 deploys).
+  const chronicMaxCumulativePnlUsd = chronicBlacklistConfig.maxCumulativePnlUsd ?? -5;
+  const chronicMinCumulativePnlSamples = chronicBlacklistConfig.minCumulativePnlSamples ?? 8;
+  const chronicCooldownHours = chronicBlacklistConfig.cooldownHours ?? 168; // 7 days
+  if (chronicEnabled && entry.base_mint) {
+    // Aggregate across all pool entries sharing this base_mint
+    let aggDeploys = 0;
+    let aggWins = 0;
+    let aggPnlSum = 0;
+    let aggPnlCount = 0;
+    let aggPnlUsdSum = 0;       // NEW: aggregate USD PnL across all deploys
+    let aggPnlUsdCount = 0;     // NEW: count of deploys with pnl_usd data
+    for (const e of Object.values(db)) {
+      if (!e?.base_mint || e.base_mint !== entry.base_mint) continue;
+      // Each pool entry has its own `deploys[]` array; count from those
+      // (more reliable than per-pool `total_deploys` which can be stale across duplicates)
+      const ds = Array.isArray(e.deploys) ? e.deploys : [];
+      for (const d of ds) {
+        if (d.pnl_pct == null) continue;
+        aggDeploys += 1;
+        if (d.pnl_pct >= 0) aggWins += 1;
+        aggPnlSum += d.pnl_pct;
+        aggPnlCount += 1;
+        // NEW: also tally pnl_usd when available (always stored from recordPerformance)
+        if (d.pnl_usd != null) {
+          aggPnlUsdSum += d.pnl_usd;
+          aggPnlUsdCount += 1;
+        }
+      }
+    }
+    if (aggDeploys >= chronicMinSamples && aggPnlCount > 0) {
+      const wrPct = (aggWins / aggDeploys) * 100;
+      const avgPnl = aggPnlSum / aggPnlCount;
+      // NEW: cumulative USD check — fires when total USD damage exceeds threshold
+      const cumUsdOk = aggPnlUsdCount >= chronicMinCumulativePnlSamples &&
+                       aggPnlUsdSum <= chronicMaxCumulativePnlUsd;
+      const wrOrAvgFailure = wrPct < chronicMaxWinRate || avgPnl <= chronicMaxAvgPnl;
+      const chronicFailure = wrOrAvgFailure || cumUsdOk;
+      if (chronicFailure) {
+        const triggers = [];
+        if (wrPct < chronicMaxWinRate) triggers.push(`${wrPct.toFixed(1)}% WR`);
+        if (avgPnl <= chronicMaxAvgPnl) triggers.push(`${avgPnl.toFixed(2)}% avg PnL`);
+        if (cumUsdOk) triggers.push(`$${aggPnlUsdSum.toFixed(2)} cumulative (${aggPnlUsdCount} deploys)`);
+        const reason = `chronic underperformance (${triggers.join(" / ")} over ${aggDeploys} aggregated deploys across ${entry.name})`;
+        const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, chronicCooldownHours, reason);
+        log("pool-memory", `Chronic-failure blacklist set for ${entry.name} (${entry.base_mint.slice(0, 8)}) until ${mintCooldownUntil} (${reason})`);
+      }
+    }
+  }
+
   // Set cooldown for low yield closes — pool wasn't profitable enough, don't redeploy soon
   if (deploy.close_reason === "low yield") {
     const cooldownHours = 4;
@@ -215,6 +289,74 @@ export function recordPoolDeploy(poolAddress, deployData) {
         const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, cooldownHours, reason);
         if (mintCooldownUntil) {
           log("pool-memory", `Base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (${reason})`);
+        }
+      }
+    }
+  }
+
+  // ── Tier 1.5: loss-triggered re-deploy cooldowns ──────────────────────────
+  // Rationale (Jul 5 2026 audit): the chronic blacklist only fires after
+  // 5+ samples. But the same token can be re-deployed within hours of a
+  // losing trade before any aggregate threshold trips (e.g. NEIL-SOL was
+  // deployed 5× today despite chronic blacklist being inert at that point).
+  // These rules block the immediate re-deploy window after a known loss,
+  // isolated by base_mint so they work across multiple pool entries.
+  //
+  //   rule-1:  every close below `-lossPnlPct` triggers a `lossCooldownHours`
+  //            base_mint cooldown. Same-mint re-deply within that window is
+  //            blocked. (Threshold below is the only tunable.)
+  //   rule-2:  2+ same-mint losses within the last `lossWindowHours` escalate
+  //            to an extended `escalatedCooldownHours` base_mint cooldown.
+  //
+  // Empirical FP table (Jul 5 2026 onchain SOL deltas):
+  //   rule-1 alone:        blocks 2 deploys, 0 wins missed, saves +0.88 SOL
+  //   rule-2 alone:        blocks 2 deploys, 0 wins missed, saves +0.14 SOL
+  //   both together:       blocks the NEIL+0x+yep repeat-offender cluster
+  //                        without harming profitable repeat plays.
+  const tier15Cfg = config.management.tier15LossCooldown ?? {};
+  const tier15Enabled = tier15Cfg.enabled !== false;
+  if (tier15Enabled && entry.base_mint && deploy.pnl_pct != null) {
+    const lossPnlPct = Number(tier15Cfg.lossPnlPct ?? -1.0);     //  -1% pnl counts as a "loss"
+    const lossCooldownHours = Number(tier15Cfg.lossCooldownHours ?? 6);
+    const lossWindowHours = Number(tier15Cfg.lossWindowHours ?? 12);
+    const escalatedCooldownHours = Number(tier15Cfg.escalatedCooldownHours ?? 24);
+    const lossWindowMs = lossWindowHours * 3600 * 1000;
+    const pnlPctValue = Number(deploy.pnl_pct);
+
+    if (Number.isFinite(pnlPctValue) && pnlPctValue <= lossPnlPct) {
+      // rule-1: 6h base-mint cooldown on the just-recorded loss
+      if (lossCooldownHours > 0) {
+        const reason1 = `tier1.5 loss (${pnlPctValue.toFixed(2)}% ≤ ${lossPnlPct}% → ${lossCooldownHours}h re-deploy block)`;
+        const cd1 = setBaseMintCooldown(db, entry.base_mint, lossCooldownHours, reason1);
+        if (cd1) {
+          log(
+            "pool-memory",
+            `tier1.5 rule-1: ${lossCooldownHours}h base_mint cooldown for ${entry.base_mint.slice(0, 8)} until ${cd1} (${reason1})`,
+          );
+        }
+      }
+      // rule-2: count losses for this mint inside the rolling window
+      let lossesInWindow = 0;
+      const nowMs = Date.now();
+      for (const e of Object.values(db)) {
+        if (e?.base_mint !== entry.base_mint) continue;
+        for (const d of (e.deploys || [])) {
+          if (d.pnl_pct == null) continue;
+          if (Number(d.pnl_pct) > lossPnlPct) continue;
+          const t = new Date(d.closed_at || d.deployed_at || 0).getTime();
+          if (Number.isFinite(t) && nowMs - t <= lossWindowMs) {
+            lossesInWindow += 1;
+          }
+        }
+      }
+      if (lossesInWindow >= 2 && escalatedCooldownHours > lossCooldownHours) {
+        const reason2 = `tier1.5 escalation (${lossesInWindow} losses in ${lossWindowHours}h → ${escalatedCooldownHours}h ban)`;
+        const cd2 = setBaseMintCooldown(db, entry.base_mint, escalatedCooldownHours, reason2);
+        if (cd2) {
+          log(
+            "pool-memory",
+            `tier1.5 rule-2: ${escalatedCooldownHours}h escalated base_mint cooldown for ${entry.base_mint.slice(0, 8)} until ${cd2} (${reason2})`,
+          );
         }
       }
     }

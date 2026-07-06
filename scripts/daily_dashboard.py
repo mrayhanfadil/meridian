@@ -79,7 +79,14 @@ def send_telegram(text: str) -> bool:
 # ── Data loading ────────────────────────────────────────────────────────────
 
 def load_closes():
-    """Return list of {date, pnl_pct, pnl_usd, reason, pool} for all closes."""
+    """Return list of {date, pnl_pct, pnl_usd, reason, pool, source} for all closes.
+
+    Source priority (Tier 1.7, July 5 2026):
+      1. onchain_postclose_backfill_2026_07_05 → ground-truth SOL delta
+      2. onchain_fallback                          → live Tier 1.7 fallback
+      3. meteora_api                                → original Meteora API path
+    PnL value in USD when available, else 0 — but `onchain_pnl_sol` always set.
+    """
     out = []
     if not LOGS.exists():
         return out
@@ -98,13 +105,94 @@ def load_closes():
             r = a.get("result")
             if not isinstance(r, dict):
                 continue
+            # USD preferred when solMode off, SOL otherwise. Always emit USD.
+            # Use captured sol_usd_at_close first (live price), fall back to 150.
+            sol_usd = r.get("sol_usd_at_close") or 150
+            if r.get("pnl_usd"):
+                pnl_usd = float(r["pnl_usd"])
+            elif r.get("pnl_sol") is not None:
+                pnl_usd = float(r["pnl_sol"]) * sol_usd
+            else:
+                pnl_usd = 0.0
             out.append({
                 "date": date,
                 "pnl_pct": r.get("pnl_pct") or 0,
-                "pnl_usd": float(r.get("pnl_true_usd") or r.get("pnl_usd") or 0),
+                "pnl_usd": pnl_usd,
+                "pnl_sol": r.get("pnl_sol"),
                 "reason": (a.get("args") or {}).get("reason", ""),
                 "pool": r.get("pool_name", ""),
+                "source": r.get("source", "meteora_api"),
             })
+    return out
+
+
+# ── SOL price lookup for backfill records ─────────────────────────────────────
+
+def get_sol_usd_at_close(close_at_iso):
+    """Get SOL/USD price as close to close_at as possible. Falls back to latest
+    captured price (from walletUsdAfter / walletSolAfter ratios) or 150."""
+    # Try resolve via state.json close_metrics (closest valid sample)
+    if not STATE.exists(): return 80.0
+    try:
+        s = json.loads(STATE.read_text())
+    except: return 80.0
+    try:
+        target = datetime.fromisoformat(close_at_iso.replace("Z", "+00:00"))
+    except: return 80.0
+    # Search all positions for the nearest sol_usd_at_close sample
+    best = None
+    best_diff = float('inf')
+    for p in s.get("positions", {}).values():
+        if not isinstance(p, dict): continue
+        cm = p.get("close_metrics") or {}
+        cs = p.get("closed_at") or ""
+        if not cm.get("sol_usd_at_close") or not cs: continue
+        try: d = datetime.fromisoformat(cs.replace("Z","+00:00"))
+        except: continue
+        diff = abs((target - d).total_seconds())
+        if diff < best_diff:
+            best_diff = diff
+            best = float(cm["sol_usd_at_close"])
+    return best or 80.0
+
+
+def load_state_backfilled_closes(target_date):
+    """Close-level reconcile via state.json close_metrics — picks up backfilled
+    records that the live action log missed (e.g. silent 0/0 closes from
+    earlier days where Tier 1.7 fallback was offline)."""
+    if not STATE.exists():
+        return []
+    try:
+        s = json.loads(STATE.read_text())
+    except Exception:
+        return []
+    out = []
+    day_start = int(datetime.fromisoformat(target_date + "T00:00:00+00:00").timestamp())
+    day_end = day_start + 86400
+    for addr, p in s.get("positions", {}).items():
+        if not isinstance(p, dict) or not p.get("closed"): continue
+        cm = p.get("close_metrics") or {}
+        cs = p.get("closed_at") or p.get("closedAt") or ""
+        try: ct = datetime.fromisoformat(cs.replace("Z", "+00:00"))
+        except: continue
+        if not (day_start <= ct.timestamp() < day_end): continue
+        # Only count ONCHAIN truth sources (not the silent 0/0 meteora_api ones)
+        src = cm.get("source", "")
+        if src != "onchain_postclose_backfill_2026_07_05":
+            continue
+        # Convert pnl_sol → pnl_usd using the live SOL price captured at that close
+        pnl_sol = float(cm.get("pnl_sol") or 0)
+        sol_usd = float(cm.get("sol_usd_at_close") or get_sol_usd_at_close(cs))
+        out.append({
+            "date": target_date,
+            "pnl_pct": cm.get("pnl_pct") or 0,
+            "pnl_usd": pnl_sol * sol_usd,
+            "pnl_sol": pnl_sol,
+            "sol_usd_at_close": sol_usd,
+            "reason": "onchain backfill",
+            "pool": p.get("pool_name", "?"),
+            "source": src,
+        })
     return out
 
 
@@ -123,6 +211,25 @@ def daily_summary(closes, target_date):
         "total": total, "avg": avg, "best": best, "worst": worst,
         "rows": rows,
     }
+
+
+def ghost_positions():
+    """Return list of currently-open positions with deployed SOL value."""
+    if not STATE.exists(): return []
+    try: s = json.loads(STATE.read_text())
+    except: return []
+    out = []
+    for addr, p in s.get("positions", {}).items():
+        if isinstance(p, dict) and not p.get("closed"):
+            deployed = p.get("amount_sol") or 0
+            out.append({
+                "address": addr[:12] + "...",
+                "pool": p.get("pool_name", "?"),
+                "deployed_sol": deployed,
+                "deployed_at": p.get("deployed_at", "?"),
+                "peak_pnl_pct": p.get("peak_pnl_pct"),
+            })
+    return out
 
 
 def rolling_summary(closes, target_date, window=7):
@@ -214,9 +321,16 @@ def interpret(yest, rolling):
 
 def render(target_date):
     closes = load_closes()
+    # Reconcile by overlaying state.json backfilled closes (Tier 1.7+dedicated entries).
+    # The backfill only counts source=='onchain_postclose_backfill_2026_07_05', which is
+    # for records the action log silently zeroed on the same day. We extend (not replace)
+    # so other action-log entries from the same day still count.
+    backfilled = load_state_backfilled_closes(target_date)
+    closes.extend(backfilled)
+
     yest = daily_summary(closes, target_date)
     roll = rolling_summary(closes, target_date)
-    open_pos = open_positions()
+    ghosts = ghost_positions()
     wallet = wallet_balance()
 
     # All-time PnL
@@ -230,6 +344,13 @@ def render(target_date):
     if yest["n"] == 0:
         lines.append("<b>Yesterday</b>: no closes")
     else:
+        # Source breakdown
+        sources = defaultdict(int)
+        sources_pnl = defaultdict(float)
+        for r in yest["rows"]:
+            sources[r["source"]] += 1
+            sources_pnl[r["source"]] += r["pnl_usd"]
+        src_parts = [f"{k}: {sources[k]} (${sources_pnl[k]:+.2f})" for k in sources]
         lines.append(
             f"<b>Yesterday</b>: <code>{yest['n']}</code> closes, "
             f"<code>{yest['wins']}W / {yest['losses']}L</code> "
@@ -247,6 +368,31 @@ def render(target_date):
                 f"  worst: <code>{w['pool']}</code> <code>{fmt_money(w['pnl_usd'])}</code> "
                 f"({fmt_pct(w['pnl_pct'])})"
             )
+        # Source breakdown line
+        if len(src_parts) > 1 or (src_parts and "meteora_api" not in src_parts[0]):
+            lines.append(f"  source: {', '.join(src_parts)}")
+
+    # Ghost positions (open at EOD)
+    if ghosts:
+        # Use the most recent sol_usd_at_close as the live price reference
+        sol_usd_live = 80.0  # fallback
+        if STATE.exists():
+            try:
+                s = json.loads(STATE.read_text())
+                for p in s.get("positions", {}).values():
+                    if isinstance(p, dict):
+                        cm = p.get("close_metrics") or {}
+                        if cm.get("sol_usd_at_close"):
+                            sol_usd_live = float(cm["sol_usd_at_close"])
+                            break
+            except: pass
+        total_locked = sum(g["deployed_sol"] for g in ghosts)
+        lines.append("")
+        lines.append(f"<b>Open (locked)</b>: <code>{len(ghosts)}</code>  [{total_locked:.2f} SOL locked, ~${total_locked*sol_usd_live:.0f} @ ${sol_usd_live:.2f}/SOL]")
+        for g in ghosts[:5]:
+            peak = g.get("peak_pnl_pct")
+            peak_str = f"peak {fmt_pct(peak)}" if peak is not None else "peak —"
+            lines.append(f"  • <code>{g['pool']}</code> ({g['deployed_sol']:.2f} SOL, {peak_str})")
 
     # Rolling 7-day
     lines.append("")
@@ -264,17 +410,7 @@ def render(target_date):
     lines.append("")
     lines.append(f"<b>Cumulative</b>: <code>{fmt_money(all_pnl)}</code>")
 
-    # Open positions
-    if open_pos:
-        lines.append("")
-        lines.append(f"<b>Open positions</b>: <code>{len(open_pos)}</code>")
-        for p in open_pos[:5]:
-            peak = p.get("peak_pnl_pct")
-            peak_str = f"peak {fmt_pct(peak)}" if peak is not None else "peak —"
-            lines.append(f"  • <code>{p['pool']}</code> ({peak_str})")
-    else:
-        lines.append("")
-        lines.append("<b>Open positions</b>: 0")
+    # (Open positions section replaced by ghost section above)
 
     # Wallet
     if wallet:

@@ -178,6 +178,22 @@ export const config = {
                               minCumulativePnlSamples: 8,
                               cooldownHours: 168,
                             },
+    // NEW (2026-07-05, Tier 1.5): loss-triggered re-deploy cooldown.
+    // Closes the same-token recycling loop the chronic blacklist misses
+    // (chronic blacklist needs ≥5 samples; this fires after a single loss).
+    //   rule-1: every close at-or-below `lossPnlPct` triggers a 6h base_mint
+    //           cooldown (configurable `lossCooldownHours`).
+    //   rule-2: when `≥2` same-mint losses fall within `lossWindowHours`,
+    //           the base_mint cooldown is escalated to `escalatedCooldownHours`.
+    // Empirically (Jul 5 2026 onchain): 0 wins missed, blocks the NEIL+0x+yep
+    // repeat-offender cluster (saves +1.02 SOL ≈ +$169 that day).
+    tier15LossCooldown:    u.tier15LossCooldown    ?? {
+                              enabled: true,
+                              lossPnlPct: -1.0,
+                              lossCooldownHours: 6,
+                              lossWindowHours: 12,
+                              escalatedCooldownHours: 24,
+                            },
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
