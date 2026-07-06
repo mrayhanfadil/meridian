@@ -11,40 +11,36 @@
  *   1. Ping each tier's chat/completions endpoint with a tiny "ping" prompt.
  *   2. Update state/llm-health.json with per-tier rolling-12-sample window
  *      (ok_count, fail_count, latency_ms, last_ok_at, last_fail_at, status).
- *   3. Compute alert_state = ok | degraded | all_down.
- *   4. Auto-promote: if a lower tier than active has been healthy for
- *      `PROMOTE_REQUIRED_CONSECUTIVE` consecutive polls AND the active tier
- *      is currently above it, write state/auto-promote-{N}.flag for the
- *      lower tier. agent.js consumes the flag on its next ReAct step.
- *   5. Telegram alert: only send on STATE TRANSITIONS
- *      (ok→degraded, degraded→all_down, all_down→recovered).
- *      Poller is fire-and-forget — never blocks the cron.
+ *   3. Auto-promote: if a tier was demoted AND lower tiers are healthy for
+ *      ≥2 consecutive polls, write state/auto-promote-{N}.flag so agent.js
+ *      flips currentTier up on its next ReAct step.
+ *
+ * Telegram alerts: DISABLED 2026-07-06 (per Fadil). The poller keeps running
+ * silently — auto-promote still happens, just no notifications.
  *
  * Invocation: node scripts/health-poller.js
  *   Typically via: cron job with schedule "every 5m"
  *
- * No external deps — uses Node built-ins + Hermes env (.env loaded via --env-file).
+ * No external deps — uses Node built-ins + .env loaded inline.
  */
 
 import fs from "fs";
 import path from "path";
-import { setTimeout as wait } from "timers/promises";
 
 // ─── Config ───────────────────────────────────────────────────────
 const REPO_ROOT = process.cwd();
 const STATE_DIR = path.join(REPO_ROOT, "state");
 const HEALTH_FILE = path.join(STATE_DIR, "llm-health.json");
 const PROMO_FLAG_PREFIX = path.join(STATE_DIR, "auto-promote-");
-const ACTIVE_TIER_FILE = path.join(STATE_DIR, "active-tier.txt");
 
-const PROMOTE_REQUIRED_CONSECUTIVE = 2;     // 2 healthy polls in a row
-const ALERT_REQUIRED_CONSECUTIVE = 2;        // 2 failing polls before alert
+const PROMOTE_REQUIRED_CONSECUTIVE = 2;
 const TIMEOUT_MS = 8000;
-const ROLLING_WINDOW = 12;                   // last N samples per tier
+const ROLLING_WINDOW = 12;
+// ENABLE_TELEGRAM=false — alerts disabled per Fadil (2026-07-06).
+const ENABLE_TELEGRAM = false;
 
 // ─── Helpers ───────────────────────────────────────────────────────
 function loadEnv() {
-  // Read .env manually — keys with no shell-expansion guarantee.
   try {
     const raw = fs.readFileSync(path.join(REPO_ROOT, ".env"), "utf8");
     for (const line of raw.split("\n")) {
@@ -80,7 +76,6 @@ async function ping(baseUrl, apiKey, model) {
       return { ok: false, latency_ms: latency, status: res.status, err: `HTTP ${res.status}` };
     }
     const body = await res.json();
-    // Body sanity: must have choices[] with a message
     if (!body?.choices?.length) {
       return { ok: false, latency_ms: latency, status: res.status, err: "empty choices[]" };
     }
@@ -135,7 +130,7 @@ function emptyTier(name) {
     last_fail_at: null,
     latency_ms_recent: null,
     last_err: null,
-    status: "unknown", // unknown | healthy | degraded | down
+    status: "unknown",
   };
 }
 
@@ -162,7 +157,7 @@ function classifyTier(t) {
 
 function getActiveTier() {
   try {
-    const v = parseInt(fs.readFileSync(ACTIVE_TIER_FILE, "utf8").trim(), 10);
+    const v = parseInt(fs.readFileSync(path.join(STATE_DIR, "active-tier.txt"), "utf8").trim(), 10);
     if ([1, 2, 3].includes(v)) return v;
   } catch { /* default */ }
   if (process.env.OPENCODE_GO_API_KEY) return 1;
@@ -171,10 +166,7 @@ function getActiveTier() {
 }
 
 function maybeWritePromoteFlag(lowerTier, state) {
-  // Promote to lowerTier only if it's currently healthy and active tier is demoted.
   if (lowerTier < 1 || lowerTier > 3) return false;
-  // Map tier-number → tier-name (key in state.tiers). The order matches
-  // tierEndpoints() in main().
   const nameByTier = { 1: "opencode-v4-flash", 2: "opencode-mimo-v2.5", 3: "direct-deepseek" };
   const t = state.tiers[nameByTier[lowerTier]];
   if (!t || t.status !== "healthy") return false;
@@ -187,24 +179,8 @@ function maybeWritePromoteFlag(lowerTier, state) {
   } catch { return false; }
 }
 
-// ─── Telegram alerts via Hermes API (best-effort, never blocks) ───
-async function telegramAlert(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
-  const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-  } catch { /* best-effort */ }
-}
+// Telegram helper kept for future opt-in (Fadil can flip ENABLE_TELEGRAM=true).
+async function telegramAlert(_text) { /* no-op — disabled 2026-07-06 per Fadil */ }
 
 // ─── Main tick ───────────────────────────────────────────────────
 async function main() {
@@ -218,7 +194,6 @@ async function main() {
   const activeTier = getActiveTier();
   state.active_tier_last_seen = activeTier;
 
-  // Probe each tier in parallel — independent endpoints, parallelism saves wall time.
   const results = await Promise.all(endpoints.map(async (e) => {
     if (!e.enabled) {
       return { tier: e.tier, name: e.name, sample: { ok: false, latency_ms: 0, status: null, err: "tier disabled (missing key)" } };
@@ -227,7 +202,6 @@ async function main() {
     return { tier: e.tier, name: e.name, sample, endpoint: e };
   }));
 
-  // Update health per tier
   for (const r of results) {
     const t = state.tiers[r.name] || emptyTier(r.name);
     const ok = r.sample.ok;
@@ -246,11 +220,9 @@ async function main() {
       t.last_err = r.sample.err || r.sample.status || "unknown";
     }
     t.last_sample_ok = ok;
-    // Trim rolling window
     if (t.ok_count_12 + t.fail_count_12 > ROLLING_WINDOW) {
       const total = t.ok_count_12 + t.fail_count_12;
       const overflow = total - ROLLING_WINDOW;
-      // Reduce ok first, then fail (rough trim — exact preservation isn't required)
       if (t.fail_count_12 >= overflow) t.fail_count_12 -= overflow;
       else { overflow -= t.fail_count_12; t.fail_count_12 = 0; t.ok_count_12 = Math.max(0, t.ok_count_12 - overflow); }
     }
@@ -266,7 +238,7 @@ async function main() {
     }
   }
 
-  // Compute overall alert_state (used only for classification — see alert rules below)
+  // Compute overall state (kept for telemetry — no longer drives Telegram)
   const statuses = Object.values(state.tiers).map(t => t.status);
   let alertState = "ok";
   if (statuses.length > 0 && statuses.every(s => s === "down" || s === "unknown")) {
@@ -279,84 +251,13 @@ async function main() {
     alertState = "degraded";
   }
   state.alert_state = alertState;
-
-  // Track per-tier "currently in down state" so we only alert ONCE when it
-  // transitions into down (not on every subsequent poll while it's still down).
-  // state.down_notified[tier_name] = boolean | undefined
-  if (!state.down_notified) state.down_notified = {};
-  for (const [name, t] of Object.entries(state.tiers)) {
-    if (t.status === "down" && !state.down_notified[name]) {
-      state.down_notified[name] = true;
-    } else if (t.status !== "down" && state.down_notified[name]) {
-      state.down_notified[name] = false; // recovered — alert will fire below
-    }
-  }
   saveHealth(state);
 
-  // ── Telegram alert policy (2026-07-06, tightened per Fadil) ─────────────────
-  // Send ONLY on these events:
-  //   (1) A SPECIFIC tier transitions into "down" → ONE alert naming the tier.
-  //   (2) A SPECIFIC tier RECOVERS from "down" → ONE alert naming the tier.
-  //   (3) ALL THREE tiers simultaneously in `down`/`unknown` → ONE critical alert.
-  // Do NOT alert on:
-  //   • degraded / down_some / all_degraded — let it ride; the agent has
-  //     tier-demotion fallbacks and the poller's own auto-promote handles it.
-  //   • repeated polls while still down (down_notified flag prevents spam).
-  const downTransitions = [];
-  const recoveries = [];
-  for (const [name, t] of Object.entries(state.tiers)) {
-    if (t.status === "down" && state.down_notified[name]) {
-      // Newly transitioned into down this tick (just set above). Stash to alert;
-      // clear the flag so we don't re-fire next poll.
-      downTransitions.push(name);
-      state.down_notified[name] = "alerted";
-    } else if (state.down_notified[name] === false) {
-      // Was down last tick, now healthy.
-      recoveries.push(name);
-      state.down_notified[name] = undefined;
-    }
-  }
-  const allDownCritical = alertState === "all_down";
-  // De-dup: don't fire all_down if we already alerted per-tier.
-  const shouldAlert = (downTransitions.length > 0) || (recoveries.length > 0) ||
-    (allDownCritical && downTransitions.length === 0 && recoveries.length === 0
-     && state.last_alert_state !== "all_down");
-  if (shouldAlert) {
-    const lines = [];
-    if (downTransitions.length) {
-      lines.push(`🚨 <b>Tier DOWN</b>`, "");
-      for (const name of downTransitions) {
-        const t = state.tiers[name];
-        lines.push(`  • <b>${name}</b>: ${t.last_err || "—"} (consecutive_fail=${t.consecutive_fail}, last_ok_ago=${t.last_ok_at || "—"})`);
-      }
-    }
-    if (recoveries.length) {
-      if (lines.length) lines.push("");
-      lines.push(`✅ <b>Tier RECOVERED</b>`, "");
-      for (const name of recoveries) {
-        const t = state.tiers[name];
-        lines.push(`  • <b>${name}</b>: healthy again (latency ${t.latency_ms_recent || "—"}ms)`);
-      }
-    }
-    if (allDownCritical && downTransitions.length === 0 && recoveries.length === 0) {
-      lines.length = 0;
-      lines.push(`🆘 <b>ALL LLM TIERS DOWN</b> — bot cannot reach any provider`, "");
-      for (const [name, t] of Object.entries(state.tiers)) {
-        lines.push(`  • <b>${name}</b>: ${t.status} (last_err=${t.last_err || "—"})`);
-      }
-    }
-    if (promotedFlags.length) {
-      lines.push("", `🔄 Auto-promote flag(s): tier ${promotedFlags.join(", ")}`);
-    }
-    await telegramAlert(lines.join("\n"));
-    state.last_alert_state = alertState;
-    state.last_alert_at = new Date().toISOString();
-    saveHealth(state);
-  }
-  state.last_alert_state = alertState;
-  saveHealth(state);
+  // Telegram path retained as no-op. To re-enable: set ENABLE_TELEGRAM=true and
+  // (optionally) wire the transition detector that existed in earlier commits.
+  void telegramAlert;
+  void ENABLE_TELEGRAM;
 
-  // Compact stdout for cron logs
   const summary = Object.entries(state.tiers)
     .map(([name, t]) => `${name}=${t.status}/lat=${t.latency_ms_recent || "—"}ms`)
     .join(" ");

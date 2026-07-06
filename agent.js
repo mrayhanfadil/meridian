@@ -100,6 +100,8 @@ import { getDecisionSummary } from "./decision-log.js";
 // state/auto-promote-N.flag when a lower tier recovers; consumeAutoPromoteFlag()
 // reads and deletes the flag once per ReAct step to flip currentTier back to a
 // higher tier without restart. Active tier is persisted in state/active-tier.txt.
+// Telegram alerts DISABLED 2026-07-06 (per Fadil). Poller continues running
+// silently — auto-promote still happens, just no notifications.
 
 import fs from "fs";
 import path from "path";
