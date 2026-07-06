@@ -91,36 +91,129 @@ import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 import { getDecisionSummary } from "./decision-log.js";
 
-// Meridian uses DIRECT DEEPSEEK as primary (user banned opencode-zen).
-// The "primaryClient" is the direct DeepSeek client. Legacy opencode-zen /
-// OpenRouter gateway code is kept below as a fallback layer (no-op when
-// DEEPSEEK_API_KEY is set and LLM_BASE_URL is unset, which is Meridian's
-// config). To re-enable a gateway as primary, set LLM_BASE_URL + LLM_API_KEY.
+// Meridian LLM topology (2026-07-06 refactor):
+//   tier 1: OpenCode Go → ${OPENCODE_GO_PRIMARY_MODEL}    (default deepseek-v4-flash)
+//   tier 2: OpenCode Go → ${OPENCODE_GO_FALLBACK_MODEL}   (default mimo-v2.5)
+//   tier 3: DEEPSEEK_BASE_URL direct (api.deepseek.com or self-hosted gateway)
+//   tier 0 (legacy fallback only): LLM_BASE_URL gateway (openrouter/etc.)
+// Auto-promote: scripts/health-poller.js observes tier health and writes
+// state/auto-promote-N.flag when a lower tier recovers; consumeAutoPromoteFlag()
+// reads and deletes the flag once per ReAct step to flip currentTier back to a
+// higher tier without restart. Active tier is persisted in state/active-tier.txt.
 
-// Secondary client for direct DeepSeek API — primary by default (Meridian uses
-// direct DeepSeek, no gateway). Kept as `deepseekClient` for legacy code paths
-// that still reference it during the opencode-zen → direct-deepseek migration.
+import fs from "fs";
+import path from "path";
+import { repoPath } from "./repo-root.js";
+
+// Direct DeepSeek client (always tier 3).
 const DEEPSEEK_BASE = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const hasDeepSeek = !!DEEPSEEK_KEY;
 
-const primaryClient = hasDeepSeek
-  ? new OpenAI({ baseURL: DEEPSEEK_BASE, apiKey: DEEPSEEK_KEY, timeout: 20 * 1000 })
+// Legacy gateway (used only when opencode is disabled AND direct deepseek has no key).
+const legacyClient = hasDeepSeek
+  ? null
   : new OpenAI({
       baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
       apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || "",
       timeout: 20 * 1000,
     });
-const deepseekClient = hasDeepSeek
+
+const directDeepseekClient = hasDeepSeek
   ? new OpenAI({ baseURL: DEEPSEEK_BASE, apiKey: DEEPSEEK_KEY, timeout: 20 * 1000 })
   : null;
 
-// Default model — prefers direct DeepSeek when DEEPSEEK_API_KEY is set (Meridian's
-// preferred path). Falls back to whatever LLM_MODEL says, then openrouter default.
-const DEFAULT_MODEL = hasDeepSeek
-  ? DEEPSEEK_MODEL
-  : (process.env.LLM_MODEL || "openrouter/healer-alpha");
+// OpenCode Go clients (tiers 1 & 2). Both share the OPENCODE_GO_API_KEY but route
+// to different models through the same gateway. Built lazily so an unset key
+// doesn't add an unused client.
+const opencodeCfg = {
+  baseUrl:      process.env.OPENCODE_GO_BASE_URL    || "https://opencode.ai/zen/go/v1",
+  primaryModel: process.env.OPENCODE_GO_PRIMARY_MODEL  || "deepseek-v4-flash",
+  fallbackModel:process.env.OPENCODE_GO_FALLBACK_MODEL || "mimo-v2.5",
+  apiKey:       process.env.OPENCODE_GO_API_KEY     || "",
+};
+const opencodeEnabled = !!opencodeCfg.apiKey;
+const opencodePrimaryClient  = opencodeEnabled
+  ? new OpenAI({ baseURL: opencodeCfg.baseUrl, apiKey: opencodeCfg.apiKey, timeout: 20 * 1000 })
+  : null;
+const opencodeFallbackClient = opencodeEnabled
+  ? new OpenAI({ baseURL: opencodeCfg.baseUrl, apiKey: opencodeCfg.apiKey, timeout: 20 * 1000 })
+  : null;
+
+// Default model — OpenCode primary if enabled, direct DeepSeek, then legacy gateway.
+const DEFAULT_MODEL = opencodeEnabled
+  ? opencodeCfg.primaryModel
+  : (hasDeepSeek ? DEEPSEEK_MODEL : (process.env.LLM_MODEL || "openrouter/healer-alpha"));
+
+// Active tier state. Settable at runtime via consumeAutoPromoteFlag().
+// Default: 1 if opencode enabled, else 3 (direct deepseek), else 0 (legacy).
+function initialTier() {
+  if (opencodeEnabled) return 1;
+  if (hasDeepSeek) return 3;
+  return 0;
+}
+let currentTier = initialTier();
+
+const ACTIVE_TIER_FILE = repoPath("state/active-tier.txt");
+const PROMOTE_FLAG_PREFIX = repoPath("state/auto-promote-");
+function loadActiveTier() {
+  try {
+    if (fs.existsSync(ACTIVE_TIER_FILE)) {
+      const v = parseInt(fs.readFileSync(ACTIVE_TIER_FILE, "utf8").trim(), 10);
+      if (!Number.isNaN(v) && v >= 0 && v <= 3) {
+        currentTier = v;
+        return;
+      }
+    }
+  } catch { /* ignore — fall through to set */ }
+  setActiveTier(initialTier());
+}
+function setActiveTier(n) {
+  currentTier = n;
+  try {
+    fs.mkdirSync(path.dirname(ACTIVE_TIER_FILE), { recursive: true });
+    fs.writeFileSync(ACTIVE_TIER_FILE, String(n));
+  } catch { /* non-fatal */ }
+}
+// consumeAutoPromoteFlag(): if health-poller wrote state/auto-promote-N.flag
+// for a tier lower than currentTier, demote to that tier (the LLM is healthy
+// again, agent should use it). One-shot — flag deleted on consume.
+function consumeAutoPromoteFlag() {
+  if (!fs.existsSync(path.dirname(PROMOTE_FLAG_PREFIX))) return;
+  for (const candidate of [1, 2, 3]) {
+    const flag = `${PROMOTE_FLAG_PREFIX}${candidate}.flag`;
+    if (fs.existsSync(flag)) {
+      try { fs.unlinkSync(flag); } catch { /* best-effort */ }
+      if (candidate <= currentTier) {
+        log("agent", `Auto-promote: tier ${currentTier} → tier ${candidate} (health-poller recovered)`);
+        setActiveTier(candidate);
+      }
+      return; // process one flag per call
+    }
+  }
+}
+loadActiveTier();
+
+// Resolve the active tier → { client, model, baseUrl, name }. Pure lookup.
+function resolveActiveClients() {
+  switch (currentTier) {
+    case 1:
+      return { client: opencodePrimaryClient, model: opencodeCfg.primaryModel,
+               baseUrl: opencodeCfg.baseUrl, name: `opencode-prim(${opencodeCfg.primaryModel})` };
+    case 2:
+      return { client: opencodeFallbackClient, model: opencodeCfg.fallbackModel,
+               baseUrl: opencodeCfg.baseUrl, name: `opencode-fb(${opencodeCfg.fallbackModel})` };
+    case 3:
+      return { client: directDeepseekClient, model: DEEPSEEK_MODEL,
+               baseUrl: DEEPSEEK_BASE, name: `direct-deepseek(${DEEPSEEK_MODEL})` };
+    case 0:
+    default:
+      return { client: legacyClient, model: process.env.LLM_MODEL || "openrouter/healer-alpha",
+               baseUrl: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
+               name: `legacy-gateway(${process.env.LLM_MODEL || "openrouter/healer-alpha"})` };
+  }
+}
 
 const MUTATING_TOOL_INTENTS = /\b(deploy|open position|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|add smart wallet|remove smart wallet|add wallet|remove wallet|pin|unpin|clear lesson|add lesson|set active strategy|remove strategy|add strategy|set |change |update |self.?update|pull latest|git pull|update yourself)\b/i;
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|pnl|yield|range|show positions|open positions|screen|candidate|find pool|search|research|analyze|check pool|token holders|narrative|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|list smart wallets|list blacklist|list blocked deployers|list lessons)\b/i;
@@ -191,7 +284,10 @@ function gatewayRequiresToolChoiceAuto() {
 // tokens and never produce a tool_call within max_tokens. Skip tool_choice
 // for them — let the model decide naturally.
 function modelUsesThinkingMode(model) {
-  return /mimo-v2\.5|mimo-v2-pro|mimo-v2-omni|kimi-k2\.7-code/i.test(model || "");
+  // OpenCode Go routes v4-flash and mimo-v2.5 in thinking mode by default — they
+  // emit reasoning_content tokens and never produce a tool_call within max_tokens.
+  // Skip tool_choice for them — let the model decide naturally.
+  return /mimo-v2\.5|mimo-v2-pro|mimo-v2-omni|kimi-k2\.7-code|deepseek-v4-flash|deepseek-v4-pro/i.test(model || "");
 }
 
 /**
@@ -240,17 +336,24 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
     try {
       const activeModel = model || DEFAULT_MODEL;
+      // Check auto-promote flag at start of each ReAct step. Poller writes the
+      // flag when a lower tier recovered; we consume it once and demote currentTier.
+      consumeAutoPromoteFlag();
 
-      // Retry up to 3 times on transient provider errors (500/502/503/504/529).
-      // Meridian uses direct DeepSeek (api.deepseek.com) as the primary path.
-      // On any gateway failure, escalate to direct DeepSeek as the final fallback
-      // (different blast radius, different rate limit pool). OpenCode-zen and
-      // openrouter are NOT used in the active chain anymore — user banned opencode-zen.
-      const FALLBACK_MODEL = hasDeepSeek ? DEEPSEEK_MODEL : (activeModel || DEFAULT_MODEL);
+      // Multi-tier provider chain (2026-07-06):
+      //   Tier 1 (active by default) → OpenCode Go → deepseek-v4-flash
+      //   Tier 2 → OpenCode Go → mimo-v2.5 (model-specific fallback)
+      //   Tier 3 → direct DeepSeek (different blast radius / rate pool)
+      //   Tier 0 → legacy LLM_BASE_URL gateway (only if opencode disabled & no DEEPSEEK_API_KEY)
+      // On transient error: demote to next tier. Health-poller may later
+      // auto-promote back via state/auto-promote-N.flag.
       let response;
       let usedModel = activeModel;
-      let usedClient = primaryClient;
-      let usedBaseURL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
+      let active = resolveActiveClients();
+      let usedClient = active.client;
+      let usedBaseURL = active.baseUrl;
+      log("agent", `Active LLM tier ${currentTier} → ${active.name}`);
+
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
@@ -264,9 +367,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           };
-          // opencode-zen rejects tool_choice=required outright and the model
-          // emits reasoning_content tokens that eat the budget. For that gateway
-          // we never send tool_choice — let it decide naturally.
+          // OpenCode Go / thinking-mode models reject tool_choice=required outright
+          // and emit reasoning_content tokens that eat the budget. For those we
+          // never send tool_choice — let the model decide naturally.
           const sendToolChoice = (usedBaseURL && /opencode\.ai\/zen/i.test(usedBaseURL)) || modelUsesThinkingMode(usedModel)
             ? false
             : (!omitToolChoice);
@@ -300,55 +403,59 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             attempt -= 1;
             continue;
           }
-          // Transient provider outage (502/503/529) → switch to fallback model
-          // on attempt 1 instead of hammering the dead upstream.
+          // Transient provider outage (502/503/529) → demote to next tier.
           const status = error?.status ?? error?.error?.status ?? error?.code ?? null;
           const errMsg = String(error?.message || error?.error?.message || error || "");
           // 500 from opencode-zen/DeepSeek v4 returns "Internal server error" with no status
           // code on the OpenAI client side. Treat any 5xx-shaped status OR generic 500
-          // message as transient so the fallback chain (mimo-v2.5 → direct DeepSeek) engages.
+          // message as transient so the tier chain engages.
           const is5xx = status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
+          const isRecoverable4xx = status === 408 || status === 425 || status === 429;
+          // "Model not supported" / "Model does not exist" → recoverable. The OpenCode
+          // gateway returns 401 with this message for unknown model IDs; the next tier
+          // (different model on same gateway, or different blast radius) may work.
+          const isUnsupportedModel = (status === 400 || status === 401 || status === 404 || status === 422)
+            && /model .{0,40} not supported|model .{0,40} does not exist|invalid model|unknown model|model not found|model .{0,40} not exist/i.test(errMsg);
           const isTransient = is5xx
-            || /temporarily unavailable|failover_exhausted|server_error|internal server error|bad gateway|service unavailable|ECONNRESET|ETIMEDOUT|timed out|request timeout|upstream|aborted|hang up|socket hang up/i.test(errMsg)
+            || isRecoverable4xx
+            || isUnsupportedModel
+            || /temporarily unavailable|failover_exhausted|server_error|internal server error|bad gateway|service unavailable|connection error|ECONNRESET|ETIMEDOUT|timed out|request timeout|upstream|aborted|hang up|socket hang up|fetch failed|getaddrinfo|network is unreachable/i.test(errMsg)
             || error?.code === "ECONNRESET" || error?.code === "ETIMEDOUT" || error?.code === "ENOTFOUND" || error?.code === "ECONNREFUSED";
           if (isTransient) {
-            // Attempt 0: gateway primary failed → jump straight to direct DeepSeek
-            // (different blast radius). Skipping same-gateway retry because most
-            // failures on Meridian's preferred opencode-zen route were family-wide.
-            if (attempt === 0 && hasDeepSeek && usedClient !== deepseekClient) {
-              usedClient = deepseekClient;
-              usedBaseURL = DEEPSEEK_BASE;
-              usedModel = DEEPSEEK_MODEL;
+            // Demote tier: try next-higher number (3 is final). Persists to disk so
+            // a freshly-restarted process boots into the demoted state.
+            const nextTierByDemotion = currentTier >= 3 ? 3 : Math.min(3, currentTier + 1);
+            // Pick the actual tier to try by jumping straight to "next" if same-tier retry
+            // would be hammering a dead upstream. attempt 0 always demotes immediately;
+            // attempt 1 retries the new tier once; attempt 2 gives up.
+            if (attempt === 0 && nextTierByDemotion !== currentTier) {
+              setActiveTier(nextTierByDemotion);
+              const demoted = resolveActiveClients();
+              usedClient = demoted.client;
+              usedBaseURL = demoted.baseUrl;
+              usedModel = demoted.model;
               omitToolChoice = true;
-              log("agent", `Provider transient error ${status || errMsg} — escalating to direct DeepSeek (${DEEPSEEK_MODEL}) (attempt 1/3)`);
+              log("agent", `Provider transient error ${status || errMsg} on tier ${currentTier} (${active.name}) — demoting to tier ${nextTierByDemotion} (${demoted.name}) (attempt 1/3)`);
               continue;
             }
-            // Attempt 0 with no direct DeepSeek available → fall back to a different model
-            // on the same gateway, in case the upstream issue was model-specific.
-            if (attempt === 0 && usedModel !== FALLBACK_MODEL) {
-              usedModel = FALLBACK_MODEL;
-              log("agent", `Provider transient error ${status || errMsg} — switching to fallback ${FALLBACK_MODEL} (attempt 1/3)`);
-              continue;
-            }
-            // Attempt 1: gateway fallback failed → escalate to direct DeepSeek
-            if (attempt === 1 && hasDeepSeek && usedClient !== deepseekClient) {
-              usedClient = deepseekClient;
-              usedBaseURL = DEEPSEEK_BASE;
-              usedModel = DEEPSEEK_MODEL;
-              omitToolChoice = true;
-              log("agent", `Fallback ${usedModel} also failed — escalating to direct DeepSeek (${DEEPSEEK_MODEL}) (attempt 2/3)`);
-              await new Promise((r) => setTimeout(r, 5000));
+            if (attempt === 1 && nextTierByDemotion === currentTier) {
+              // Already on the lowest tier; just retry once after a backoff.
+              const wait = 5000;
+              log("agent", `Provider transient error ${status || errMsg} on tier ${currentTier} (${active.name}) — retrying in ${wait / 1000}s (attempt 2/3)`);
+              await new Promise((r) => setTimeout(r, wait));
               continue;
             }
             if (attempt < 2) {
               const wait = (attempt + 1) * 5000;
-              log("agent", `Provider transient error ${status || errMsg} — retrying in ${wait / 1000}s (attempt ${attempt + 2}/3)`);
+              log("agent", `Provider transient error ${status || errMsg} on tier ${currentTier} (${active.name}) — retrying in ${wait / 1000}s (attempt ${attempt + 2}/3)`);
               await new Promise((r) => setTimeout(r, wait));
               continue;
             }
           }
-          // Rate limit (429) on the fallback model — back off and let the
-          // primary model recover. Don't burn all 3 attempts on the same limit.
+          // Rate limit (429) — back off and let the active tier recover. Don't
+          // burn all 3 attempts on the same limit. We do NOT demote on rate-limit
+          // because downgrading mid-rate-limit doesn't help and may just hit
+          // another rate pool.
           const isRateLimit = status === 429
             || /rate limit exceeded|too many requests/i.test(errMsg)
             || error?.code === "rate_limit_exceeded";
@@ -356,21 +463,6 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             const wait = 30 * 1000;
             log("agent", `Rate limited on ${usedModel} (${status || errMsg}) — backing off ${wait / 1000}s (attempt ${attempt + 2}/3)`);
             await new Promise((r) => setTimeout(r, wait));
-            // If primary was already retried and failed, escalate to direct DeepSeek now.
-            if (attempt === 0 && hasDeepSeek && usedClient !== deepseekClient) {
-              usedClient = deepseekClient;
-              usedBaseURL = DEEPSEEK_BASE;
-              usedModel = DEEPSEEK_MODEL;
-              omitToolChoice = true;
-              log("agent", `Escalating to direct DeepSeek (${DEEPSEEK_MODEL}) after rate-limit backoff`);
-              attempt += 1; // count this escalation
-            } else {
-              // Otherwise switch back to primary in case it has recovered
-              if (usedModel !== activeModel) {
-                usedModel = activeModel;
-                log("agent", `Switching back to primary model ${activeModel}`);
-              }
-            }
             continue;
           }
           throw error;
@@ -379,9 +471,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         const errCode = response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
+          if (attempt === 1 && currentTier > 1) {
+            const demoted = Math.max(1, currentTier - 1);
+            setActiveTier(demoted);
+            const next = resolveActiveClients();
+            usedClient = next.client;
+            usedBaseURL = next.baseUrl;
+            usedModel = next.model;
+            log("agent", `Switching down to tier ${demoted} (${next.name}) after ${errCode}`);
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
             await new Promise((r) => setTimeout(r, wait));

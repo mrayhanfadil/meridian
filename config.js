@@ -275,6 +275,22 @@ export const config = {
     managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
     screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "openrouter/hunter-alpha",
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+    // NEW (2026-07-06): OpenCode Go multi-tier fallback chain.
+    // Tier 1: opencodePrimary  — OpenCode → ${primaryModel} (default deepseek-v4-flash)
+    // Tier 2: opencodeFallback — OpenCode → ${fallbackModel} (default mimo-v2.5)
+    //   Both tiers share the OpenCode Go subscription key but use different models
+    //   to insulate from model-specific issues. Falls through to direct DeepSeek
+    //   (DEEPSEEK_BASE_URL) if both fail.
+    // Auto-promote: scripts/health-poller.js writes state/auto-promote-N.flag
+    //   when a tier recovers; agent.js consumes the flag once per ReAct step.
+    opencode: {
+      baseUrl:         process.env.OPENCODE_GO_BASE_URL || "https://opencode.ai/zen/go/v1",
+      primaryModel:    process.env.OPENCODE_GO_PRIMARY_MODEL  || "deepseek-v4-flash",
+      fallbackModel:   process.env.OPENCODE_GO_FALLBACK_MODEL || "mimo-v2.5",
+      apiKey:          process.env.OPENCODE_GO_API_KEY || "",
+      enabled:         !!(process.env.OPENCODE_GO_API_KEY),
+      healthCheckMaxAgeSec: 600, // 10min — if poller hasn't checked in this long, treat all tiers as unknown
+    },
   },
 
   // ─── Darwinian Signal Weighting ───────
