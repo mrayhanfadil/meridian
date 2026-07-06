@@ -266,7 +266,7 @@ async function main() {
     }
   }
 
-  // Compute overall alert_state
+  // Compute overall alert_state (used only for classification — see alert rules below)
   const statuses = Object.values(state.tiers).map(t => t.status);
   let alertState = "ok";
   if (statuses.length > 0 && statuses.every(s => s === "down" || s === "unknown")) {
@@ -280,26 +280,81 @@ async function main() {
   }
   state.alert_state = alertState;
 
+  // Track per-tier "currently in down state" so we only alert ONCE when it
+  // transitions into down (not on every subsequent poll while it's still down).
+  // state.down_notified[tier_name] = boolean | undefined
+  if (!state.down_notified) state.down_notified = {};
+  for (const [name, t] of Object.entries(state.tiers)) {
+    if (t.status === "down" && !state.down_notified[name]) {
+      state.down_notified[name] = true;
+    } else if (t.status !== "down" && state.down_notified[name]) {
+      state.down_notified[name] = false; // recovered — alert will fire below
+    }
+  }
   saveHealth(state);
 
-  // Telegram: only on state transitions (not every run)
-  const prevAlert = state.last_alert_state || "ok";
-  if (alertState !== prevAlert) {
-    const lines = [
-      `🔁 <b>LLM tier health: ${prevAlert} → ${alertState}</b>`,
-      "",
-      ...Object.entries(state.tiers).map(([name, t]) => {
-        const flag = t.last_err ? ` err=${t.last_err}` : "";
-        return `  • <b>${name}</b>: ${t.status} (consec_ok=${t.consecutive_ok}, consec_fail=${t.consecutive_fail}, ${t.latency_ms_recent || "—"}ms${flag})`;
-      }),
-    ];
+  // ── Telegram alert policy (2026-07-06, tightened per Fadil) ─────────────────
+  // Send ONLY on these events:
+  //   (1) A SPECIFIC tier transitions into "down" → ONE alert naming the tier.
+  //   (2) A SPECIFIC tier RECOVERS from "down" → ONE alert naming the tier.
+  //   (3) ALL THREE tiers simultaneously in `down`/`unknown` → ONE critical alert.
+  // Do NOT alert on:
+  //   • degraded / down_some / all_degraded — let it ride; the agent has
+  //     tier-demotion fallbacks and the poller's own auto-promote handles it.
+  //   • repeated polls while still down (down_notified flag prevents spam).
+  const downTransitions = [];
+  const recoveries = [];
+  for (const [name, t] of Object.entries(state.tiers)) {
+    if (t.status === "down" && state.down_notified[name]) {
+      // Newly transitioned into down this tick (just set above). Stash to alert;
+      // clear the flag so we don't re-fire next poll.
+      downTransitions.push(name);
+      state.down_notified[name] = "alerted";
+    } else if (state.down_notified[name] === false) {
+      // Was down last tick, now healthy.
+      recoveries.push(name);
+      state.down_notified[name] = undefined;
+    }
+  }
+  const allDownCritical = alertState === "all_down";
+  // De-dup: don't fire all_down if we already alerted per-tier.
+  const shouldAlert = (downTransitions.length > 0) || (recoveries.length > 0) ||
+    (allDownCritical && downTransitions.length === 0 && recoveries.length === 0
+     && state.last_alert_state !== "all_down");
+  if (shouldAlert) {
+    const lines = [];
+    if (downTransitions.length) {
+      lines.push(`🚨 <b>Tier DOWN</b>`, "");
+      for (const name of downTransitions) {
+        const t = state.tiers[name];
+        lines.push(`  • <b>${name}</b>: ${t.last_err || "—"} (consecutive_fail=${t.consecutive_fail}, last_ok_ago=${t.last_ok_at || "—"})`);
+      }
+    }
+    if (recoveries.length) {
+      if (lines.length) lines.push("");
+      lines.push(`✅ <b>Tier RECOVERED</b>`, "");
+      for (const name of recoveries) {
+        const t = state.tiers[name];
+        lines.push(`  • <b>${name}</b>: healthy again (latency ${t.latency_ms_recent || "—"}ms)`);
+      }
+    }
+    if (allDownCritical && downTransitions.length === 0 && recoveries.length === 0) {
+      lines.length = 0;
+      lines.push(`🆘 <b>ALL LLM TIERS DOWN</b> — bot cannot reach any provider`, "");
+      for (const [name, t] of Object.entries(state.tiers)) {
+        lines.push(`  • <b>${name}</b>: ${t.status} (last_err=${t.last_err || "—"})`);
+      }
+    }
     if (promotedFlags.length) {
-      lines.push("", `🔄 Auto-promote flag(s) written: tier ${promotedFlags.join(", ")}`);
+      lines.push("", `🔄 Auto-promote flag(s): tier ${promotedFlags.join(", ")}`);
     }
     await telegramAlert(lines.join("\n"));
     state.last_alert_state = alertState;
+    state.last_alert_at = new Date().toISOString();
     saveHealth(state);
   }
+  state.last_alert_state = alertState;
+  saveHealth(state);
 
   // Compact stdout for cron logs
   const summary = Object.entries(state.tiers)
