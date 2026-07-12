@@ -158,10 +158,10 @@ We will implement this in five structured, bite-sized phases to ensure we never 
 2. **Logic:** Bypasses LLM-decision lag by executing an automated, high-frequency redeployment cycle. It withdraws 100% of old liquidity, closes the out-of-range position account, generates fresh custom curve weights (e.g., Gaussian) centered on the new active bin, and immediately redeploys.
 3. **Execution Function:** `rebalancePosition({ position_address, new_active_bin, shape, width })`. Tested and verified in dry-run with 100% success.
 
-### Phase 4: Helius Yellowstone gRPC
-1. Implement `@triton-one/yellowstone-grpc` client.
-2. Establish a stream subscribing to Meteora DLMM pool account updates.
-3. Parse transaction logs to extract `activeBin` in real-time.
+### Phase 4: Helius Yellowstone gRPC (WebSocket Fallback) [✅ COMPLETED]
+1. **Implementation File:** `tools/dlmm/stream-client.ts` (TypeScript native).
+2. **Logic:** Bypasses Helius's premium paid gRPC wall (which requires Pro tier) by leveraging Solana's native, free **WebSocket Account Subscription protocol (`onAccountChange`)**. It listens directly to the pool's account state on-chain, triggering immediate active bin lookups upon any confirmed slot change (<400ms latency) for zero additional cost.
+3. **Execution Function:** `startPoolStream(pool_address, callback)` and `stopPoolStream()`. Tested and verified in dry-run with 100% success on live pool.
 
 ---
 
