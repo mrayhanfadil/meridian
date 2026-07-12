@@ -1,22 +1,20 @@
 import {
   Connection,
   PublicKey,
-  LAMPORTS_PER_SOL,
   VersionedTransaction,
   Keypair,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "../logger.js";
-import { config, nextRpcUrl, nextHeliusKey, getHeliusKeyPool } from "../config.js";
+import { config, nextRpcUrl, getHeliusKeyPool } from "../config.js";
 
-let _connection = null;
-let _wallet = null;
+let _connection: Connection | null = null;
+let _wallet: Keypair | null = null;
 
-// Round-robin: build a fresh Connection each call so load spreads across RPC_URLS.
-// Cache by URL so we don't reconstruct on every web3 call within a tick.
-const _connCache = new Map(); // url → Connection
+// Round-robin: cache by URL so we don't reconstruct on every web3 call within a tick.
+const _connCache = new Map<string, Connection>(); // url → Connection
 
-function getConnection() {
+export function getConnection(): Connection {
   const url = nextRpcUrl();
   if (!url) throw new Error("RPC_URL (or RPC_URLS) not set");
   let conn = _connCache.get(url);
@@ -27,7 +25,7 @@ function getConnection() {
   return conn;
 }
 
-function getWallet() {
+export function getWallet(): Keypair {
   if (!_wallet) {
     if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
     _wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
@@ -39,13 +37,18 @@ const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
 const JUPITER_SWAP_V2_API = "https://api.jup.ag/swap/v2";
 const DEFAULT_JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
-function getJupiterApiKey() {
-  return config.jupiter.apiKey || process.env.JUPITER_API_KEY || DEFAULT_JUPITER_API_KEY;
+function getJupiterApiKey(): string {
+  return (config.jupiter as any)?.apiKey || process.env.JUPITER_API_KEY || DEFAULT_JUPITER_API_KEY;
 }
 
-function getJupiterReferralParams() {
-  const referralAccount = String(config.jupiter.referralAccount || "").trim();
-  const referralFee = Number(config.jupiter.referralFeeBps || 0);
+interface ReferralParams {
+  referralAccount: string;
+  referralFee: number;
+}
+
+function getJupiterReferralParams(): ReferralParams | null {
+  const referralAccount = String((config.jupiter as any)?.referralAccount || "").trim();
+  const referralFee = Number((config.jupiter as any)?.referralFeeBps || 0);
   if (!referralAccount || !Number.isFinite(referralFee) || referralFee <= 0) {
     return null;
   }
@@ -62,12 +65,39 @@ function getJupiterReferralParams() {
   return { referralAccount, referralFee: Math.round(referralFee) };
 }
 
+export interface EnrichedToken {
+  mint: string;
+  symbol: string;
+  balance: number;
+  usd: number | null;
+  sol_value: number | null;
+}
+
+export interface WalletBalancesResult {
+  wallet: string | null;
+  sol: number;
+  sol_price: number;
+  sol_usd: number;
+  usdc: number;
+  tokens: EnrichedToken[];
+  total_usd: number;
+  error?: string;
+}
+
+interface HeliusBalance {
+  mint: string;
+  symbol?: string;
+  balance: number;
+  pricePerToken?: number;
+  usdValue?: number;
+}
+
 /**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
  */
-export async function getWalletBalances() {
-  let walletAddress;
+export async function getWalletBalances(): Promise<WalletBalancesResult> {
+  let walletAddress: string | null = null;
   try {
     walletAddress = getWallet().publicKey.toString();
   } catch {
@@ -81,13 +111,10 @@ export async function getWalletBalances() {
   }
 
   try {
-    // Round-robin across all Helius keys with retry on 429/5xx within a single call.
-    // On success, advance the cursor so the next getWalletBalances() starts past
-    // the key we just used — gives even distribution across cycles.
     const pool = getHeliusKeyPool?.() || [HELIUS_KEY];
     const maxAttempts = Math.max(1, pool.length);
-    let res;
-    let lastErr;
+    let res: Response | null = null;
+    let lastErr: any = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const key = pool[attempt % pool.length];
       const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${key}`;
@@ -105,35 +132,30 @@ export async function getWalletBalances() {
       break;
     }
     if (!res) throw lastErr || new Error("All Helius keys exhausted");
+    
     // Success: bump the shared cursor so next cycle starts at a different key.
-    config.advanceHeliusCursor?.();
+    (config as any).advanceHeliusCursor?.();
 
-    const data = await res.json();
-    const balances = data.balances || [];
+    const data: any = await res.json();
+    const balances: HeliusBalance[] = data.balances || [];
 
     // ─── Find SOL and USDC ───────────────────────────────────
-    const solEntry = balances.find(b => b.mint === config.tokens.SOL || b.symbol === "SOL");
-    const usdcEntry = balances.find(b => b.mint === config.tokens.USDC || b.symbol === "USDC");
+    const solEntry = balances.find(b => b.mint === (config.tokens as any).SOL || b.symbol === "SOL");
+    const usdcEntry = balances.find(b => b.mint === (config.tokens as any).USDC || b.symbol === "USDC");
 
     const solBalance = solEntry?.balance || 0;
     const solPrice = solEntry?.pricePerToken || 0;
     const solUsd = solEntry?.usdValue || 0;
     const usdcBalance = usdcEntry?.balance || 0;
-    // SOL/USD used to derive per-token SOL value (NOT a price feed — math only).
-    // Prefer live SOL price, fallback to config.management.solUsdFallback, then 0.
+    
     const solUsdRate = solPrice > 0
       ? solPrice
-      : (Number(config.management?.solUsdFallback) || 0);
+      : (Number((config.management as any)?.solUsdFallback) || 0);
 
     // ─── Map all tokens ───────────────────────────────────────
-    // Each token now carries both `usd` (raw USD value from Helius/Birdeye)
-    // and `sol_value` (USD ÷ SOL/USD, rounded to 6 decimals). For micro-cap
-    // tokens whose USD value is near-zero, sol_value surfaces the real
-    // worth — the dust-handling bug where 0.62 SOL got skipped on NEIL-SOL
-    // was caused by comparing `token.usd < 0.10` instead of sol_value.
-    const enrichedTokens = balances.map(b => {
-      const usd = b.usdValue ? Math.round(b.usdValue * 100) / 100 : null;
-      const sol_value = (usd != null && solUsdRate > 0)
+    const enrichedTokens: EnrichedToken[] = balances.map(b => {
+      const usd = b.usdValue != null ? Math.round(b.usdValue * 100) / 100 : null;
+      const sol_value = (usd != null && solUsdRate > 0 && b.usdValue != null)
         ? Math.round((b.usdValue / solUsdRate) * 1e6) / 1e6
         : null;
       return {
@@ -154,7 +176,7 @@ export async function getWalletBalances() {
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
     };
-  } catch (error) {
+  } catch (error: any) {
     log("wallet_error", error.message);
     return {
       wallet: walletAddress,
@@ -175,7 +197,7 @@ export async function getWalletBalances() {
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 // Normalize any SOL-like address to the correct wrapped SOL mint
-export function normalizeMint(mint) {
+export function normalizeMint(mint: string): string {
   if (!mint) return mint;
   const SOL_MINT = "So11111111111111111111111111111111111111112";
   if (
@@ -189,19 +211,42 @@ export function normalizeMint(mint) {
   return mint;
 }
 
+export interface SwapTokenParams {
+  input_mint: string;
+  output_mint: string;
+  amount: number;
+}
+
+export interface SwapResult {
+  success: boolean;
+  tx?: string;
+  input_mint?: string;
+  output_mint?: string;
+  amount_in?: number;
+  amount_out?: number;
+  referral_account?: string | null;
+  referral_fee_bps_requested?: number;
+  fee_bps_applied?: number | null;
+  fee_mint?: string | null;
+  error?: string;
+}
+
 export async function swapToken({
   input_mint,
   output_mint,
   amount,
-}) {
+}: SwapTokenParams): Promise<SwapResult> {
   input_mint  = normalizeMint(input_mint);
   output_mint = normalizeMint(output_mint);
 
   if (process.env.DRY_RUN === "true") {
     return {
-      dry_run: true,
-      would_swap: { input_mint, output_mint, amount },
-      message: "DRY RUN — no transaction sent",
+      success: true,
+      tx: "DRY_RUN_SIGNATURE",
+      input_mint,
+      output_mint,
+      amount_in: amount,
+      amount_out: amount,
     };
   }
 
@@ -212,19 +257,12 @@ export async function swapToken({
 
     // ─── Convert to smallest unit ──────────────────────────────
     let decimals = 9; // SOL default
-    if (input_mint !== config.tokens.SOL) {
+    if (input_mint !== (config.tokens as any).SOL) {
       const mintInfo = await connection.getParsedAccountInfo(new PublicKey(input_mint));
-      decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
+      decimals = (mintInfo.value?.data as any)?.parsed?.info?.decimals ?? 9;
     }
     const amountStr = Math.floor(amount * Math.pow(10, decimals)).toString();
 
-    // ─── Get Swap V2 order (unsigned tx + requestId) ───────────
-    // dynamicSlippage=true: Jupiter V2 picks optimal slippage per quote (verified
-    // 2026-07-03: returns 22 bps on liquid pairs, higher on illiquid). Without
-    // this, we either lock in too-tight slippage (rejection on volatile tokens)
-    // or pay default 22 bps when we could route better.
-    // priorityLevel=medium: reduces "tx confirmed but price moved" window
-    // without burning priority fees on every swap. Empty dust below.
     const search = new URLSearchParams({
       inputMint: input_mint,
       outputMint: output_mint,
@@ -233,6 +271,7 @@ export async function swapToken({
       dynamicSlippage: "true",
       priorityLevel: "medium",
     });
+    
     const referralParams = getJupiterReferralParams();
     if (referralParams) {
       search.set("referralAccount", referralParams.referralAccount);
@@ -249,7 +288,7 @@ export async function swapToken({
       throw new Error(`Swap V2 order failed: ${orderRes.status} ${body}`);
     }
 
-    const order = await orderRes.json();
+    const order: any = await orderRes.json();
     if (order.errorCode || order.errorMessage) {
       throw new Error(`Swap V2 order error: ${order.errorMessage || order.errorCode}`);
     }
@@ -274,7 +313,7 @@ export async function swapToken({
       throw new Error(`Swap V2 execute failed: ${execRes.status} ${await execRes.text()}`);
     }
 
-    const result = await execRes.json();
+    const result: any = await execRes.json();
     if (result.status === "Failed") {
       throw new Error(`Swap failed on-chain: code=${result.code}`);
     }
@@ -299,7 +338,7 @@ export async function swapToken({
       fee_bps_applied: order.feeBps ?? null,
       fee_mint: order.feeMint ?? null,
     };
-  } catch (error) {
+  } catch (error: any) {
     log("swap_error", error.message);
     return { success: false, error: error.message };
   }

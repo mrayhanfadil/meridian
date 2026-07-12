@@ -8,20 +8,12 @@ import {
   minutesOutOfRange,
 } from "../state.js";
 
-// ─── Public-infra PnL engine ───────────────────────────────────
-// Live position value (current liquidity + claimable fees) is read ON-CHAIN
-// via the Meteora DLMM SDK on a public RPC (pump.helius). Deposit history
-// (cost basis, withdrawals, claimed fees) comes ONLY from the Meteora /pnl
-// API — its precomputed live pnl/balances are intentionally ignored. Token
-// USD prices come from Jupiter. No LPAgent / agentmeridian dependency, so the
-// poller can run aggressively on fully public resources.
-
 const JUP_SEARCH = "https://datapi.jup.ag/v1/assets/search";
 const METEORA_PNL = "https://dlmm.datapi.meteora.ag/positions";
 
 // Lazy SDK load — mirrors tools/dlmm.js (CJS dir-imports break in ESM at import time).
-let _DLMM = null;
-async function loadDlmmSdk() {
+let _DLMM: any = null;
+async function loadDlmmSdk(): Promise<any> {
   if (!_DLMM) {
     const mod = await import("@meteora-ag/dlmm");
     _DLMM = mod.default;
@@ -29,37 +21,38 @@ async function loadDlmmSdk() {
   return _DLMM;
 }
 
-let _pnlConnection = null;
-export function getPnlConnection() {
+let _pnlConnection: Connection | null = null;
+export function getPnlConnection(): Connection {
   if (!_pnlConnection) {
-    _pnlConnection = new Connection(config.pnl.rpcUrl, "confirmed");
+    _pnlConnection = new Connection((config.pnl as any).rpcUrl, "confirmed");
   }
   return _pnlConnection;
 }
 
-function safeNum(value) {
+function safeNum(value: any): number {
   const n = parseFloat(value ?? 0);
   return Number.isFinite(n) ? n : 0;
 }
-function maybeNum(value) {
+
+function maybeNum(value: any): number | null {
   if (value == null || value === "") return null;
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : null;
 }
-function round(value, decimals = 4) {
+
+function round(value: any, decimals = 4): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   const f = 10 ** decimals;
   return Math.round(n * f) / f;
 }
-function unique(arr) {
+
+function unique(arr: string[]): string[] {
   return [...new Set(arr.filter(Boolean))];
 }
 
 // ─── Meteora /pnl per pool (deposit history) ────────────────────
-// Exported because tools/dlmm.js (getPositionPnl + the Meteora fallback path)
-// also reads it.
-export async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
+export async function fetchDlmmPnlForPool(poolAddress: string, walletAddress: string): Promise<any> {
   const url = `${METEORA_PNL}/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
   try {
     const res = await fetch(url);
@@ -68,45 +61,42 @@ export async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
       log("pnl_api", `HTTP ${res.status} for pool ${poolAddress.slice(0, 8)}: ${body.slice(0, 120)}`);
       return {};
     }
-    const data = await res.json();
+    const data: any = await res.json();
     const positions = data.positions || data.data || [];
-    const byAddress = {};
+    const byAddress: any = {};
     for (const p of positions) {
       const addr = p.positionAddress || p.address || p.position;
       if (addr) byAddress[addr] = p;
     }
     return byAddress;
-  } catch (e) {
+  } catch (e: any) {
     log("pnl_api", `Fetch error for pool ${poolAddress.slice(0, 8)}: ${e.message}`);
     return {};
   }
 }
 
 // ─── Jupiter prices (never cached) ──────────────────────────────
-async function getJupiterPrices(mints) {
+async function getJupiterPrices(mints: string[]): Promise<{ [mint: string]: number | null }> {
   const list = unique(mints.map((m) => String(m).trim()));
   if (!list.length) return {};
   try {
     const res = await fetch(`${JUP_SEARCH}?query=${list.join(",")}`, { headers: { accept: "application/json" } });
     if (!res.ok) throw new Error(`Jupiter ${res.status}`);
-    const assets = await res.json();
-    const out = {};
+    const assets: any = await res.json();
+    const out: { [mint: string]: number | null } = {};
     for (const a of assets) out[a.id] = maybeNum(a.usdPrice);
     return out;
-  } catch (e) {
+  } catch (e: any) {
     log("pnl_price", `Jupiter price fetch failed: ${e.message}`);
     return {};
   }
 }
 
 // ─── Deposit-history cache (sig-invalidated + TTL) ──────────────
-// Deposits/withdrawals/claimed fees change only on a position tx; feePerTvl24h
-// is a slow 24h pool stat. Cache per pool, refetch when any position's latest
-// signature changes or the TTL lapses.
-const _meteoraCache = new Map(); // pool -> { at, byPosition, sigByPosition }
+const _meteoraCache = new Map<string, any>(); // pool -> { at, byPosition, sigByPosition }
 let _pollCount = 0;
 
-async function getLatestSig(conn, addr) {
+async function getLatestSig(conn: Connection, addr: string): Promise<string | null> {
   try {
     const sigs = await conn.getSignaturesForAddress(new PublicKey(addr), { limit: 1 });
     return sigs?.[0]?.signature ?? null;
@@ -115,24 +105,24 @@ async function getLatestSig(conn, addr) {
   }
 }
 
-async function getMeteoraData(conn, walletAddress, flat) {
-  const ttlMs = Math.max(0, Number(config.pnl.depositCacheTtlSec ?? 300)) * 1000;
-  const positionsByPool = new Map();
+async function getMeteoraData(conn: Connection, walletAddress: string, flat: any[]): Promise<any> {
+  const ttlMs = Math.max(0, Number((config.pnl as any).depositCacheTtlSec ?? 300)) * 1000;
+  const positionsByPool = new Map<string, string[]>();
   for (const f of flat) {
     if (!positionsByPool.has(f.pool)) positionsByPool.set(f.pool, []);
-    positionsByPool.get(f.pool).push(f.position);
+    positionsByPool.get(f.pool)!.push(f.position);
   }
 
-  const byPosition = {};
+  const byPosition: any = {};
   await Promise.all([...positionsByPool.entries()].map(async ([pool, positionAddrs]) => {
     const cached = _meteoraCache.get(pool);
-    const sigByPosition = {};
+    const sigByPosition: any = {};
     await Promise.all(positionAddrs.map(async (addr) => { sigByPosition[addr] = await getLatestSig(conn, addr); }));
 
     const ageOk = cached && Date.now() - cached.at < ttlMs;
     const sigsMatch = cached && positionAddrs.every((a) => cached.sigByPosition?.[a] === sigByPosition[a]);
 
-    let data;
+    let data: any;
     if (ageOk && sigsMatch) {
       data = cached.byPosition;
     } else {
@@ -145,12 +135,12 @@ async function getMeteoraData(conn, walletAddress, flat) {
   return byPosition;
 }
 
-function mapEntries(map) {
+function mapEntries(map: any): any[] {
   return map instanceof Map ? [...map.entries()] : Object.entries(map || {});
 }
 
 // ─── Build the shaped position object (matches getMyPositions output) ──
-function buildPosition(f, prices, solUsd, meteora, solMode) {
+function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any, solMode: boolean): any {
   const priceX = f.baseMint ? (prices[f.baseMint] ?? 0) : 0;
 
   const xHuman = safeNum(f.xRaw) / 10 ** f.decX;
@@ -177,20 +167,11 @@ function buildPosition(f, prices, solUsd, meteora, solMode) {
 
   const ourPct = solMode ? pctSol : pctUsd;
 
-  // pnl_pct_diff is the gap vs Meteora's precomputed pct — kept ONLY as a logged
-  // diagnostic. It is NOT used to gate exits: Meteora's pct comes from the
-  // deposit cache (stale up to depositCacheTtlSec) while ourPct is fresh every
-  // poll, so on a fast move the gap inflates and would falsely suppress
-  // STOP_LOSS / TRAILING_TP exactly when they matter.
   const reportedPct = solMode ? maybeNum(meteora?.pnlSolPctChange) : maybeNum(meteora?.pnlPctChange);
   const pnlPctDiff = reportedPct != null ? Math.abs(ourPct - reportedPct) : null;
 
-  // On-chain amounts are authoritative; a tick is "suspicious" (don't act on it)
-  // only when we couldn't price it. Guards against:
-  //  - Jupiter outage → solUsd/priceX missing → balances collapse → false STOP_LOSS
-  //  - missing Meteora deposits → 0 cost basis → garbage pnl / inflated value
   const holdsTokenX = xHuman > 0 || feeXHuman > 0;
-  const priceMissing = !(solUsd > 0) || (holdsTokenX && !!f.baseMint && !(priceX > 0));
+  const priceMissing = !((solUsd ?? 0) > 0) || (holdsTokenX && !!f.baseMint && !(priceX > 0));
   const depositsMissing = (solMode ? depositsSol : depositsUsd) <= 0;
   const pnlPctSuspicious = priceMissing || depositsMissing;
   if (pnlPctSuspicious) {
@@ -239,11 +220,9 @@ function buildPosition(f, prices, solUsd, meteora, solMode) {
 }
 
 // ─── Main entry: compute positions from public infra ────────────
-// Returns the same shape as getMyPositions, or throws so the caller can
-// fall back to the Meteora-API path.
-export async function computePositions(walletAddress) {
-  const solMode = !!config.management?.solMode;
-  const SOL_MINT = config.tokens.SOL;
+export async function computePositions(walletAddress: string): Promise<any> {
+  const solMode = !!(config.management as any)?.solMode;
+  const SOL_MINT = (config.tokens as any).SOL;
   const conn = getPnlConnection();
   const DLMM = await loadDlmmSdk();
 
@@ -254,7 +233,7 @@ export async function computePositions(walletAddress) {
     log("pnl_tick", `poller alive — ${n} position(s) tracked (tick #${_pollCount})`);
   }
 
-  const flat = [];
+  const flat: any[] = [];
   for (const [lbPairKey, info] of mapEntries(map)) {
     const decX = info?.tokenX?.mint?.decimals ?? 9;
     const decY = info?.tokenY?.mint?.decimals ?? 9;
