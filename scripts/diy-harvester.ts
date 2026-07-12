@@ -3,11 +3,12 @@
  * DIY HawkFi Harvester (Meridian OS)
  * Phase 1: Auto-Harvest & Auto-Accumulate (AA)
  *
+ * TypeScript Edition.
  * Looks up active positions in state.json, checks if unclaimed fees cross
  * the threshold (default $5), claims fees, and auto-swaps the claimed non-SOL
  * tokens back to SOL using Jupiter Swap V2 API.
  *
- * Invocation: node scripts/diy-harvester.js
+ * Invocation: npx tsx scripts/diy-harvester.ts
  */
 
 import "../envcrypt.js"; // Decrypt env variables
@@ -19,35 +20,71 @@ import { swapToken, getWalletBalances } from "../tools/wallet.js";
 import { Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 
-let _wallet = null;
-function getWallet() {
+// Define strict types for TS compiler safety
+interface Position {
+  position: string;
+  pool: string;
+  pair: string;
+  base_mint: string | null;
+  unclaimed_fees_true_usd?: number;
+  total_value_usd?: number;
+  total_value_true_usd?: number;
+  collected_fees_usd?: number;
+  pnl_usd?: number;
+  pnl_pct?: number;
+}
+
+interface PositionData {
+  wallet: string;
+  total_positions: number;
+  positions: Position[];
+  source: string;
+}
+
+interface ClaimResult {
+  success: boolean;
+  position?: string;
+  txs?: string[];
+  base_mint?: string;
+  error?: string;
+}
+
+interface SwapResult {
+  success: boolean;
+  tx?: string;
+  error?: string;
+}
+
+let _wallet: Keypair | null = null;
+function getWallet(): Keypair {
   if (!_wallet) {
-    if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
-    _wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
+    const pkey = process.env.WALLET_PRIVATE_KEY;
+    if (!pkey) throw new Error("WALLET_PRIVATE_KEY not set");
+    _wallet = Keypair.fromSecretKey(bs58.decode(pkey));
   }
   return _wallet;
 }
 
-async function main() {
+async function main(): Promise<void> {
   log("harvester", "DIY Harvester cron tick started...");
-  console.log("=== DIY HawkFi Harvester (Meridian OS) ===");
+  console.log("=== DIY HawkFi Harvester (Meridian OS) [TypeScript] ===");
   
   try {
     const wallet = getWallet();
-    const walletAddress = wallet.publicKey.toString();
+    const walletAddress: string = wallet.publicKey.toString();
     console.log(`Wallet Address: ${walletAddress}`);
     
     // 1. Fetch live active positions
     console.log("Fetching live positions from public RPC/Meteora...");
-    const posData = await computePositions(walletAddress);
-    const positions = posData.positions || [];
+    const posData = (await computePositions(walletAddress)) as PositionData;
+    const positions: Position[] = posData.positions || [];
     console.log(`Found ${positions.length} active position(s).`);
     
-    const claimMin = config.management?.minClaimAmount ?? 5;
+    const claimMin: number = (config.management as any)?.minClaimAmount ?? 5;
     console.log(`Unclaimed fee threshold: $${claimMin}`);
     
     for (const p of positions) {
-      const unclaimedUsd = p.unclaimed_fees_true_usd ?? 0;
+      const unclaimedUsd: number = p.unclaimed_fees_true_usd ?? 0;
       console.log(`Position ${p.position.slice(0, 8)} (${p.pair}): Unclaimed Fees = $${unclaimedUsd.toFixed(2)}`);
       
       if (unclaimedUsd >= claimMin) {
@@ -60,8 +97,8 @@ async function main() {
         }
         
         // 2. Claim fees on-chain
-        const claimResult = await claimFees({ position_address: p.position });
-        if (claimResult.success) {
+        const claimResult = (await claimFees({ position_address: p.position })) as ClaimResult;
+        if (claimResult.success && claimResult.txs) {
           console.log(`✅ Claim successful! TXs: ${claimResult.txs.join(", ")}`);
           log("harvester", `Claim successful for ${p.position}. TX: ${claimResult.txs[0]}`);
           
@@ -71,35 +108,35 @@ async function main() {
           
           // 3. Fetch fresh wallet balances to detect claimed base token amount
           console.log("Refreshing wallet balances to find claimed tokens...");
-          const balanceData = await getWalletBalances();
-          const tokens = balanceData.tokens || [];
+          const balanceData: any = await getWalletBalances();
+          const tokens: any[] = balanceData.tokens || [];
           
           // We want to swap the base token (Token X) to SOL
-          const baseMint = claimResult.base_mint;
+          const baseMint: string | undefined = claimResult.base_mint;
           if (!baseMint) {
             console.log("⚠️ base_mint not returned by claimFees, skipping auto-swap.");
             continue;
           }
           
           // Don't swap if base token is already SOL
-          if (baseMint === config.tokens.SOL) {
+          if (baseMint === (config.tokens as any).SOL) {
             console.log("ℹ️ Base token is already SOL. No swap needed.");
             continue;
           }
           
           const tokenEntry = tokens.find((t) => t.mint === baseMint);
           if (tokenEntry && tokenEntry.balance > 0) {
-            const amountToSwap = tokenEntry.balance;
+            const amountToSwap: number = tokenEntry.balance;
             console.log(`🔄 Auto-swapping claimed fees: ${amountToSwap} ${tokenEntry.symbol} → SOL...`);
             log("harvester", `Swapping claimed fee balance: ${amountToSwap} ${tokenEntry.symbol} → SOL`);
             
-            const swapResult = await swapToken({
+            const swapResult = (await swapToken({
               input_mint: baseMint,
-              output_mint: config.tokens.SOL,
+              output_mint: (config.tokens as any).SOL,
               amount: amountToSwap
-            });
+            })) as SwapResult;
             
-            if (swapResult.success) {
+            if (swapResult.success && swapResult.tx) {
               console.log(`✅ Swap complete! TX: ${swapResult.tx}`);
               log("harvester", `Auto-swap complete for ${tokenEntry.symbol} → SOL. TX: ${swapResult.tx}`);
             } else {
@@ -121,7 +158,7 @@ async function main() {
     console.log("\n=== Harvester Cycle Finished ===");
     log("harvester", "DIY Harvester cycle finished successfully.");
     process.exit(0);
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Error in harvester execution: ${error.message}`);
     log("harvester_error", `Fatal error in harvester: ${error.message}`);
     process.exit(1);
