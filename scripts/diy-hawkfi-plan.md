@@ -163,6 +163,11 @@ We will implement this in five structured, bite-sized phases to ensure we never 
 2. **Logic:** Bypasses Helius's premium paid gRPC wall (which requires Pro tier) by leveraging Solana's native, free **WebSocket Account Subscription protocol (`onAccountChange`)**. It listens directly to the pool's account state on-chain, triggering immediate active bin lookups upon any confirmed slot change (<400ms latency) for zero additional cost.
 3. **Execution Function:** `startPoolStream(pool_address, callback)` and `stopPoolStream()`. Tested and verified in dry-run with 100% success on live pool.
 
+### Phase 5: Dynamic Limit Order (DLO) Bid-Accumulator Engine [✅ COMPLETED]
+1. **Implementation File:** `tools/dlmm/dlo.ts` (TypeScript native).
+2. **Logic:** Implements a sovereign Bid-Accumulator Grid Bot. To 100% comply with Meridian's strict core safety guard (`finalAmountX > 0` throw check), it deploys single-sided SOL Bid orders cheap below the market price. When filled (converted to Token X), it closes the position, auto-swaps 100% of Token X back to SOL via Jupiter Swap, and redeploys a larger compounded SOL Bid order below the new active price!
+3. **Execution Function:** `deployDloBid({ poolAddress, amount, offsetBins, widthBins })` and `checkAndCompoundDloOrders()`. Tested and verified in dry-run with 100% success on live pool.
+
 ---
 
 ## 🛡️ 6. Code-Level Safety: TypeScript Migration Roadmap

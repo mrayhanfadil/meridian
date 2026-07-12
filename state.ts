@@ -34,6 +34,7 @@ export interface StoredPosition {
   position: string;
   pool: string;
   pool_name?: string;
+  base_mint?: string;
   strategy: string;
   bin_range?: { min?: number | null; max?: number | null; active?: number | null };
   amount_sol: number;

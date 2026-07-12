@@ -9,6 +9,8 @@ export interface ActiveBinResult {
 export interface DeployPositionParams {
   pool_address: string;
   amount_sol: number;
+  amount_x?: number;
+  amount_y?: number;
   strategy: string;
   bins_below?: number;
   bins_above?: number;
