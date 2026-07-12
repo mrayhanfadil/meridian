@@ -167,7 +167,26 @@ We will implement this in five structured, bite-sized phases to ensure we never 
 
 ---
 
-## 📈 6. Conclusion & Next Steps
+## 🛡️ 6. Code-Level Safety: TypeScript Migration Roadmap
+
+To prevent compiler errors, spelling typos, or variable reference mismatches in our high-frequency execution code, we are migrating the entire **Meridian OS** codebase to **TypeScript**. 
+
+### ⚙️ The Technical Transition (Node.js + TS ESM)
+* **allowJs Coexistence:** Our `tsconfig.json` has `allowJs: true` and `skipLibCheck: true` enabled. This means `.js` and `.ts` files coexist peacefully. We do *not* need to migrate 10,000 lines of code all at once.
+* **On-The-Fly Compilation (tsx):** To allow Node.js to read `.ts` files on-the-fly without manual compilation build steps, we replace the entry execution command from `node index.js` to **`npx tsx index.js`** in PM2/npm scripts.
+
+### 🗺️ Step-by-Step TS Migration Roadmap
+We will migrate modules incrementally to minimize risk and avoid stopping on-chain operations:
+
+1. **Step 1: Core Utilities (In Progress)** — Migrate basic utilities like `logger.js` ➔ `logger.ts` and `config.js` ➔ `config.ts`.
+2. **Step 2: Core State Engine (Next)** — Migrate `state.js` ➔ `state.ts` (the central state tracking logic, highly susceptible to property lookup bugs).
+3. **Step 3: Public APIs & Jupiter Routing** — Migrate `tools/wallet.js` & `tools/pnl.js` ➔ `.ts`.
+4. **Step 4: On-Chain SDK Modules** — Migrate `tools/dlmm.js` & `tools/screening.js` ➔ `.ts`.
+5. **Step 5: Main Orchestrator & Boot** — Migrate `index.js` ➔ `index.ts` and change PM2/ecosystem runner scripts to execute `tsx`.
+
+---
+
+## 📈 7. Conclusion & Next Steps
 
 This plan is **highly feasible** and represents a significant upgrade in Fadiil's sovereign DeFi operations. It moves us from a simple "screening/management" agent to a **fully sovereign DeFi yield-optimization platform**.
 

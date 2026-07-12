@@ -8,15 +8,15 @@
     "meridian": "cli.js"
   },
   "scripts": {
-    "setup": "node setup.js",
+    "setup": "npx tsx setup.js",
     "env:encrypt": "node scripts/envrypt.js encrypt",
-    "start": "node index.js",
+    "start": "npx tsx index.js",
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:restart": "pm2 restart meridian --update-env",
     "pm2:logs": "pm2 logs meridian --lines 100",
     "pm2:stop": "pm2 stop meridian",
     "pm2:delete": "pm2 delete meridian",
-    "dev": "DRY_RUN=true node index.js",
+    "dev": "DRY_RUN=true npx tsx index.js",
     "lb:check": "node plugins/lb/install.mjs --check",
     "lb:install": "node plugins/lb/install.mjs",
     "lb:force": "node plugins/lb/install.mjs --force",
