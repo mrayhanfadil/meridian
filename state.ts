@@ -12,12 +12,12 @@ import fs from "fs";
 import { log } from "./logger.js";
 import { repoPath } from "./repo-root.js";
 
-const STATE_FILE = repoPath("state.json");
+const STATE_FILE: string = repoPath("state.json");
 
 const MAX_RECENT_EVENTS = 20;
 const MAX_INSTRUCTION_LENGTH = 280;
 
-function sanitizeStoredText(text, maxLen = MAX_INSTRUCTION_LENGTH) {
+function sanitizeStoredText(text: string | null | undefined, maxLen = MAX_INSTRUCTION_LENGTH): string | null {
   if (text == null) return null;
   const cleaned = String(text)
     .replace(/[\r\n\t]+/g, " ")
@@ -28,28 +28,110 @@ function sanitizeStoredText(text, maxLen = MAX_INSTRUCTION_LENGTH) {
   return cleaned || null;
 }
 
-function load() {
+// ─── Interfaces for Strict Typing ──────────────────────────────
+
+export interface StoredPosition {
+  position: string;
+  pool: string;
+  pool_name?: string;
+  strategy: string;
+  bin_range?: { min?: number | null; max?: number | null; active?: number | null };
+  amount_sol: number;
+  amount_x: number;
+  initial_sol: number;
+  active_bin_at_deploy?: number | null;
+  bin_step?: number;
+  volatility?: number;
+  fee_tvl_ratio?: number;
+  initial_fee_tvl_24h?: number;
+  organic_score?: number;
+  initial_value_usd?: number;
+  entry_mcap?: number | null;
+  entry_tvl?: number | null;
+  entry_volume?: number | null;
+  entry_holders?: number | null;
+  entry_sol_usd?: number | null;
+  entry_gas_sol?: number | null;
+  entry_slippage_pct?: number | null;
+  signal_snapshot?: any;
+  deployed_at?: string;
+  out_of_range_since: string | null;
+  last_claim_at: string | null;
+  total_fees_claimed_usd: number;
+  rebalance_count: number;
+  closed: boolean;
+  closed_at: string | null;
+  notes: string[];
+  peak_pnl_pct?: number;
+  pending_peak_pnl_pct?: number | null;
+  pending_peak_confirm_count?: number;
+  pending_peak_started_at?: string | null;
+  trough_pnl_pct?: number;
+  pending_trough_pnl_pct?: number | null;
+  pending_trough_confirm_count?: number;
+  pending_trough_started_at?: string | null;
+  pending_exit_action?: string | null;
+  pending_exit_count?: number;
+  pending_exit_started_at?: string | null;
+  trailing_active?: boolean;
+  instruction?: string | null;
+  close_metrics?: any;
+  close_metrics_recorded_at?: string;
+}
+
+export interface AgentState {
+  positions: { [address: string]: StoredPosition };
+  recentEvents: any[];
+  lastUpdated: string | null;
+  _lastBriefingDate?: string;
+}
+
+function load(): AgentState {
   if (!fs.existsSync(STATE_FILE)) {
     return { positions: {}, recentEvents: [], lastUpdated: null };
   }
   try {
     return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-  } catch (err) {
+  } catch (err: any) {
     log("state_error", `Failed to read state.json: ${err.message}`);
-    return { positions: {}, lastUpdated: null };
+    return { positions: {}, recentEvents: [], lastUpdated: null };
   }
 }
 
-function save(state) {
+function save(state: AgentState): void {
   try {
     state.lastUpdated = new Date().toISOString();
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-  } catch (err) {
+  } catch (err: any) {
     log("state_error", `Failed to write state.json: ${err.message}`);
   }
 }
 
 // ─── Position Registry ─────────────────────────────────────────
+
+export interface TrackPositionParams {
+  position: string;
+  pool: string;
+  pool_name?: string;
+  strategy: string;
+  bin_range?: { min?: number | null; max?: number | null; active?: number | null };
+  amount_sol: number;
+  amount_x?: number;
+  active_bin?: number | null;
+  bin_step?: number;
+  volatility?: number;
+  fee_tvl_ratio?: number;
+  organic_score?: number;
+  initial_value_usd?: number;
+  signal_snapshot?: any;
+  entry_mcap?: number | null;
+  entry_tvl?: number | null;
+  entry_volume?: number | null;
+  entry_holders?: number | null;
+  entry_sol_usd?: number | null;
+  entry_gas_sol?: number | null;
+  entry_slippage_pct?: number | null;
+}
 
 /**
  * Record a newly deployed position.
@@ -73,16 +155,10 @@ export function trackPosition({
   entry_tvl = null,
   entry_volume = null,
   entry_holders = null,
-  // ── Deploy-side metrics (2026-07-05 detailed-logging patch) ──
-  // entry_sol_usd      — SOL price captured at deploy time, used to
-  //                       compute entry value independently from Meteora API.
-  // entry_gas_sol      — total lamports consumed by the deploy transaction(s).
-  // entry_slippage_pct — % gap between expected deploy value (amount_sol * SOL
-  //                       price) and actual on-chain deposit value (initial_value_usd).
   entry_sol_usd = null,
   entry_gas_sol = null,
   entry_slippage_pct = null,
-}) {
+}: TrackPositionParams): void {
   const state = load();
   state.positions[position] = {
     position,
@@ -92,8 +168,6 @@ export function trackPosition({
     bin_range,
     amount_sol,
     amount_x,
-    // SOL-native convention (2026-07-03): store initial_sol explicitly as the canonical
-    // denominator for SOL-basis PnL %. Falls back to amount_sol if caller didn't pass.
     initial_sol: amount_sol,
     active_bin_at_deploy: active_bin,
     bin_step,
@@ -122,7 +196,6 @@ export function trackPosition({
     pending_peak_pnl_pct: null,
     pending_peak_confirm_count: 0,
     pending_peak_started_at: null,
-    // Trough (deepest intra-trade drawdown) — set by confirmTrough()
     trough_pnl_pct: 0,
     pending_trough_pnl_pct: null,
     pending_trough_confirm_count: 0,
@@ -140,7 +213,7 @@ export function trackPosition({
 /**
  * Mark a position as out of range (sets timestamp on first detection).
  */
-export function markOutOfRange(position_address) {
+export function markOutOfRange(position_address: string): void {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
@@ -154,7 +227,7 @@ export function markOutOfRange(position_address) {
 /**
  * Mark a position as back in range (clears OOR timestamp).
  */
-export function markInRange(position_address) {
+export function markInRange(position_address: string): void {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
@@ -169,7 +242,7 @@ export function markInRange(position_address) {
  * How many minutes has a position been out of range?
  * Returns 0 if currently in range.
  */
-export function minutesOutOfRange(position_address) {
+export function minutesOutOfRange(position_address: string): number {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos || !pos.out_of_range_since) return 0;
@@ -180,7 +253,7 @@ export function minutesOutOfRange(position_address) {
 /**
  * Record a fee claim event.
  */
-export function recordClaim(position_address, fees_usd) {
+export function recordClaim(position_address: string, fees_usd?: number): void {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
@@ -193,7 +266,7 @@ export function recordClaim(position_address, fees_usd) {
 /**
  * Append to the recent events log (shown in every prompt).
  */
-function pushEvent(state, event) {
+function pushEvent(state: AgentState, event: any): void {
   if (!state.recentEvents) state.recentEvents = [];
   state.recentEvents.push({ ts: new Date().toISOString(), ...event });
   if (state.recentEvents.length > MAX_RECENT_EVENTS) {
@@ -203,36 +276,16 @@ function pushEvent(state, event) {
 
 /**
  * Mark a position as closed.
- *
- * `metrics` (optional) — authoritative on-chain figures captured by the close
- * path. We persist them in a structured `close_metrics` field so we can later
- * audit slippage, hidden losses, and per-trade SOL flow without scraping notes.
- *
- * Accepted keys (all optional):
- *   pnl_sol             — net PnL denominated in SOL (already fee-net)
- *   pnl_usd             — net PnL denominated in USD (raw)
- *   pnl_pct             — net PnL as % of deploy
- *   initial_value_usd   — deposit value at close-time, USD
- *   final_value_usd     — withdrawal value at close-time, USD
- *   fees_usd            — fees earned during the position lifetime, USD
- *   slippage_pct        — % slippage between ideal exit and actual received
- *   source              — "meteora_api" | "cache_fallback" | "unknown"
- *   wallet_sol_after    — wallet SOL balance immediately after close
- *   wallet_usd_after    — wallet USD value immediately after close (using live SOL price)
- *   trough_pnl_pct      — deepest intra-trade drawdown seen before close
- *   peak_pnl_pct        — highest intra-trade gain seen before close
  */
-export function recordClose(position_address, reason, metrics) {
+export function recordClose(position_address: string, reason: string, metrics?: any): void {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return;
   pos.closed = true;
   pos.closed_at = new Date().toISOString();
 
-  // Persist structured close metrics when caller provides them. Keep this
-  // additive — older positions continue to render via the notes-only path.
   if (metrics && typeof metrics === "object") {
-    const clean = {};
+    const clean: any = {};
     for (const k of [
       "pnl_sol",
       "pnl_usd",
@@ -283,7 +336,7 @@ export function recordClose(position_address, reason, metrics) {
  * Set a persistent instruction for a position (e.g. "hold until 5% profit").
  * Overwrites any previous instruction. Pass null to clear.
  */
-export function setPositionInstruction(position_address, instruction) {
+export function setPositionInstruction(position_address: string, instruction: string | null): boolean {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos) return false;
@@ -294,20 +347,15 @@ export function setPositionInstruction(position_address, instruction) {
 }
 
 /**
- * Raise the confirmed peak PnL only after `confirmTicks` consecutive polls where the
- * candidate stays above the current peak. With the 3s RPC poller this confirms a real
- * high in ~3-6s and prevents a single noisy tick from inflating the peak (which would
- * otherwise arm a false trailing-drop). Replaces the old 15s setTimeout recheck.
- * Returns true when the peak was raised this call.
+ * Raise the confirmed peak PnL only after `confirmTicks` consecutive polls.
  */
-export function confirmPeak(position_address, candidatePnlPct, confirmTicks = 2) {
+export function confirmPeak(position_address: string, candidatePnlPct: number | null | undefined, confirmTicks = 2): boolean {
   if (candidatePnlPct == null) return false;
   const state = load();
   const pos = state.positions[position_address];
   if (!pos || pos.closed) return false;
 
   const currentPeak = pos.peak_pnl_pct ?? 0;
-  // No new high — drop any pending peak candidate.
   if (candidatePnlPct <= currentPeak) {
     if (pos.pending_peak_pnl_pct != null) {
       pos.pending_peak_pnl_pct = null;
@@ -317,12 +365,10 @@ export function confirmPeak(position_address, candidatePnlPct, confirmTicks = 2)
     return false;
   }
 
-  // Same-or-higher candidate as the pending one → another confirming tick.
   if (pos.pending_peak_pnl_pct != null && candidatePnlPct >= pos.pending_peak_pnl_pct) {
     pos.pending_peak_confirm_count = (pos.pending_peak_confirm_count ?? 1) + 1;
     pos.pending_peak_pnl_pct = candidatePnlPct;
   } else {
-    // New / lower-than-pending candidate → start a fresh confirmation streak.
     pos.pending_peak_pnl_pct = candidatePnlPct;
     pos.pending_peak_confirm_count = 1;
     pos.pending_peak_started_at = new Date().toISOString();
@@ -344,21 +390,16 @@ export function confirmPeak(position_address, candidatePnlPct, confirmTicks = 2)
 
 /**
  * Trough (lowest PnL ever seen) tracking with consecutive-tick confirmation.
- * Mirror of confirmPeak() but for drawdown. We use the SAME confirmTicks so
- * intra-trade drawdown visibility has the same noise-filtering as peak tracking.
- * Persisted as `trough_pnl_pct` (initial value 0 means "no drawdown yet").
  */
-export function confirmTrough(position_address, candidatePnlPct, confirmTicks = 2) {
+export function confirmTrough(position_address: string, candidatePnlPct: number | null | undefined, confirmTicks = 2): boolean {
   if (candidatePnlPct == null) return false;
   const state = load();
   const pos = state.positions[position_address];
   if (!pos || pos.closed) return false;
 
-  // Only meaningful for negative pnl — positive pnl doesn't make trough deeper.
   if (candidatePnlPct >= 0) return false;
 
   const currentTrough = pos.trough_pnl_pct ?? 0;
-  // Trough only moves DOWN. candidatePnlPct < currentTrough means new low.
   if (candidatePnlPct >= currentTrough) {
     if (pos.pending_trough_pnl_pct != null) {
       pos.pending_trough_pnl_pct = null;
@@ -368,7 +409,6 @@ export function confirmTrough(position_address, candidatePnlPct, confirmTicks = 
     return false;
   }
 
-  // Same-or-lower candidate as the pending one → another confirming tick.
   if (pos.pending_trough_pnl_pct != null && candidatePnlPct <= pos.pending_trough_pnl_pct) {
     pos.pending_trough_confirm_count = (pos.pending_trough_confirm_count ?? 1) + 1;
     pos.pending_trough_pnl_pct = candidatePnlPct;
@@ -384,17 +424,21 @@ export function confirmTrough(position_address, candidatePnlPct, confirmTicks = 
     pos.pending_trough_confirm_count = 0;
     pos.pending_trough_started_at = null;
     save(state);
-    log(
-      "state",
-      `Position ${position_address} trough PnL confirmed at ${pos.trough_pnl_pct.toFixed(2)}% (${confirmTicks} ticks)`
-    );
+    log("state", `Position ${position_address} trough PnL confirmed at ${pos.trough_pnl_pct.toFixed(2)}% (${confirmTicks} ticks)`);
     return true;
   }
 
   save(state);
   return false;
 }
-export function registerExitSignal(position_address, signal, confirmTicks = 2) {
+
+export interface ExitSignalResult {
+  fire: boolean;
+  action: string | null;
+  count: number;
+}
+
+export function registerExitSignal(position_address: string, signal: string | null | undefined, confirmTicks = 2): ExitSignalResult {
   const state = load();
   const pos = state.positions[position_address];
   if (!pos || pos.closed) return { fire: false, action: null, count: 0 };
@@ -431,7 +475,7 @@ export function registerExitSignal(position_address, signal, confirmTicks = 2) {
 /**
  * Get all tracked positions (optionally filter open-only).
  */
-export function getTrackedPositions(openOnly = false) {
+export function getTrackedPositions(openOnly = false): StoredPosition[] {
   const state = load();
   const all = Object.values(state.positions);
   return openOnly ? all.filter((p) => !p.closed) : all;
@@ -440,15 +484,24 @@ export function getTrackedPositions(openOnly = false) {
 /**
  * Get a single tracked position.
  */
-export function getTrackedPosition(position_address) {
+export function getTrackedPosition(position_address: string): StoredPosition | null {
   const state = load();
   return state.positions[position_address] || null;
+}
+
+export interface StateSummary {
+  open_positions: number;
+  closed_positions: number;
+  total_fees_claimed_usd: number;
+  positions: any[];
+  last_updated: string | null;
+  recent_events: any[];
 }
 
 /**
  * Summarize state for the agent system prompt.
  */
-export function getStateSummary() {
+export function getStateSummary(): StateSummary {
   const state = load();
   const open = Object.values(state.positions).filter((p) => !p.closed);
   const closed = Object.values(state.positions).filter((p) => p.closed);
@@ -476,15 +529,28 @@ export function getStateSummary() {
   };
 }
 
+export interface CheckExitResult {
+  action: string;
+  reason: string;
+  needs_confirmation?: boolean;
+  pnl_usd?: number;
+  target_usd?: number;
+  current_pnl_pct?: number | null;
+  peak_pnl_pct?: number;
+  drop_from_peak_pct?: number;
+  effective_drop_pct?: number;
+  final_close_pct?: number;
+  floor_clamped?: boolean;
+}
+
 /**
  * Check all exit conditions for a position (trailing TP, stop loss, OOR, low yield).
- * Updates peak_pnl_pct, trailing_active, and OOR state.
- * @param {string} position_address
- * @param {object} positionData - fields from getMyPositions: pnl_pct, in_range, fee_per_tvl_24h
- * @param {object} mgmtConfig
- * Returns { action, reason } or null if no exit needed.
  */
-export function updatePnlAndCheckExits(position_address, positionData, mgmtConfig) {
+export function updatePnlAndCheckExits(
+  position_address: string,
+  positionData: any,
+  mgmtConfig: any
+): CheckExitResult | null {
   const { pnl_pct: currentPnlPct, pnl_pct_suspicious, in_range, fee_per_tvl_24h } = positionData;
   const state = load();
   const pos = state.positions[position_address];
@@ -520,17 +586,13 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     };
   }
 
-  // ── Absolute USD profit close (PRIORITY over trailing TP) ──────
-  // Closes when realized PnL (USD) >= profitCloseUsd. Solves "trailing TP overcuts noise"
-  // by letting winners run until a real dollar target is hit.
+  // ── Absolute USD profit close ──────────────────────────────────
   if (
     !pnl_pct_suspicious &&
     mgmtConfig.profitCloseEnabled &&
     mgmtConfig.profitCloseUsd != null &&
     positionData?.pnl_usd != null
   ) {
-    // In solMode:true, positionData.pnl_usd is SOL-denominated; convert to USD for the rule.
-    // Use live SOL price if available (mgmtConfig._liveSolPrice), else fallback to static.
     const solPrice = mgmtConfig._liveSolPrice || mgmtConfig.solUsdFallback || 150;
     const pnlUsdForRule = mgmtConfig.solMode
       ? positionData.pnl_usd * solPrice
@@ -548,47 +610,35 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Trailing TP (time-decay, breakeven-clamped) ──────────────────
-// Trigger: 1% (early activation — captures spike early).
-// Drop: 2.5% base, scaled by tier (0.5x/0.75x/1.0x).
-// Clamp: trailing exit is NEVER below 0% (breakeven floor).
-//         If drop calculation yields close < 0%, snap to 0%.
-//         Replaces the historical -1.5% leak that came from
-//         trigger=1% drop=2.5% without a floor.
-    if (!pnl_pct_suspicious && pos.trailing_active && currentPnlPct != null) {
-      // Time-decay trailing drop (3-tier age-aware):
-      //   <60m  (young):   0.5× base — 1.25% drop, raw close >= trigger - 1.25%
-      //   60-240m (mid):   0.75× base — 1.875% drop, raw close >= trigger - 1.875%
-      //   >240m (mature):  1.0× base — 2.5% drop, raw close >= trigger - 2.5%
-      //   All tiers clamped at 0% breakeven floor.
-      let effectiveDropPct = mgmtConfig.trailingDropPct;
-      if (positionData?.age_minutes != null) {
-        if (positionData.age_minutes < 60) {
-          effectiveDropPct = mgmtConfig.trailingDropPct * 0.5; // 1.25% if base=2.5%
-        } else if (positionData.age_minutes < 240) {
-          effectiveDropPct = mgmtConfig.trailingDropPct * 0.75; // 1.875% if base=2.5%
-        } else {
-          effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
-        }
-      }
-      const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
-      if (dropFromPeak >= effectiveDropPct) {
-        const rawClosePct = pos.peak_pnl_pct - effectiveDropPct;
-        // Clamp to breakeven floor: trailing TP can never close at a loss.
-        const breakevenFloorPct = 0;
-        const finalClosePct = Math.max(rawClosePct, breakevenFloorPct);
-        return {
-          action: "TRAILING_TP",
-          reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%]; close clamped to breakeven floor ${breakevenFloorPct}%)`,
-          needs_confirmation: true,
-          peak_pnl_pct: pos.peak_pnl_pct,
-          current_pnl_pct: currentPnlPct,
-          drop_from_peak_pct: dropFromPeak,
-          effective_drop_pct: effectiveDropPct,
-          final_close_pct: finalClosePct,
-          floor_clamped: finalClosePct > rawClosePct,
-          };
+  if (!pnl_pct_suspicious && pos.trailing_active && currentPnlPct != null && pos.peak_pnl_pct != null) {
+    let effectiveDropPct = mgmtConfig.trailingDropPct;
+    if (positionData?.age_minutes != null) {
+      if (positionData.age_minutes < 60) {
+        effectiveDropPct = mgmtConfig.trailingDropPct * 0.5; // 1.25% if base=2.5%
+      } else if (positionData.age_minutes < 240) {
+        effectiveDropPct = mgmtConfig.trailingDropPct * 0.75; // 1.875% if base=2.5%
+      } else {
+        effectiveDropPct = mgmtConfig.trailingDropPct; // 2.5% (base)
       }
     }
+    const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
+    if (dropFromPeak >= effectiveDropPct) {
+      const rawClosePct = pos.peak_pnl_pct - effectiveDropPct;
+      const breakevenFloorPct = 0;
+      const finalClosePct = Math.max(rawClosePct, breakevenFloorPct);
+      return {
+        action: "TRAILING_TP",
+        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${effectiveDropPct.toFixed(2)}% [base ${mgmtConfig.trailingDropPct}%]; close clamped to breakeven floor ${breakevenFloorPct}%)`,
+        needs_confirmation: true,
+        peak_pnl_pct: pos.peak_pnl_pct,
+        current_pnl_pct: currentPnlPct,
+        drop_from_peak_pct: dropFromPeak,
+        effective_drop_pct: effectiveDropPct,
+        final_close_pct: finalClosePct,
+        floor_clamped: finalClosePct > rawClosePct,
+      };
+    }
+  }
 
   // ── Out of range too long ──────────────────────────────────────
   if (pos.out_of_range_since) {
@@ -601,7 +651,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
   }
 
-  // ── Low yield (only after position has had time to accumulate fees) ───
+  // ── Low yield ──────────────────────────────────────────────────
   const { age_minutes } = positionData;
   const minAgeForYieldCheck = mgmtConfig.minAgeBeforeYieldCheck ?? 60;
   if (
@@ -621,13 +671,12 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 
 /**
  * Check if a position's yield has decayed significantly from deploy.
- * Detects fast-decaying pools that haven't yet hit minFeePerTvl24h threshold.
- * @param {string} position_address
- * @param {object} positionData - fields from getMyPositions: fee_per_tvl_24h, age_minutes
- * @param {object} mgmtConfig
- * Returns { action, reason } or null if no decay detected.
  */
-export function checkYieldDecay(position_address, positionData, mgmtConfig) {
+export function checkYieldDecay(
+  position_address: string,
+  positionData: any,
+  mgmtConfig: any
+): CheckExitResult | null {
   const decayConfig = mgmtConfig.yieldDecayCheck;
   if (!decayConfig?.enabled) return null;
 
@@ -663,7 +712,7 @@ export function checkYieldDecay(position_address, positionData, mgmtConfig) {
 /**
  * Get the date (YYYY-MM-DD UTC) when the last briefing was sent.
  */
-export function getLastBriefingDate() {
+export function getLastBriefingDate(): string | null {
   const state = load();
   return state._lastBriefingDate || null;
 }
@@ -671,19 +720,17 @@ export function getLastBriefingDate() {
 /**
  * Record that the briefing was sent today.
  */
-export function setLastBriefingDate() {
+export function setLastBriefingDate(): void {
   const state = load();
   state._lastBriefingDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
   save(state);
 }
 
-/**
- * Reconcile local state with actual on-chain positions.
- * Marks any local open positions as closed if they are not in the on-chain list.
- */
+// ─── State Sync ────────────────────────────────────────────────
+
 const SYNC_GRACE_MS = 5 * 60_000; // don't auto-close positions deployed < 5 min ago
 
-export function syncOpenPositions(active_addresses) {
+export function syncOpenPositions(active_addresses: string[]): void {
   const state = load();
   const activeSet = new Set(active_addresses);
   let changed = false;
