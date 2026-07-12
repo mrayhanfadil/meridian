@@ -197,6 +197,20 @@ async function executeManagementActions(actionPositions, actionMap, { liveMessag
       const ok = res?.success !== false && !res?.error && !res?.blocked;
       await liveMessage?.toolFinish("close_position", res, ok);
       lines.push(`${p.pair}: ${ok ? `closed (${reason})` : `close FAILED — ${res?.error || res?.reason || "unknown"}`}`);
+    } else if (act.action === "REBALANCE") {
+      const reason = act.reason || "Osprey Auto-Rebalance";
+      await liveMessage?.toolStart("rebalance_position");
+      const { rebalancePosition } = await import("./tools/dlmm/rebalancer.js");
+      const res = await rebalancePosition({
+        position_address: p.position,
+        new_active_bin: act.new_active_bin,
+        shape: act.shape,
+        width: act.width,
+        silent: true
+      }).catch(e => ({ success: false, error: e.message }));
+      const ok = res?.success;
+      await liveMessage?.toolFinish("rebalance_position", res, ok);
+      lines.push(`${p.pair}: ${ok ? `rebalanced (${reason})` : `rebalance FAILED — ${res?.error || "unknown"}`}`);
     } else if (act.action === "CLAIM") {
       await liveMessage?.toolStart("claim_fees");
       const res = await executeTool("claim_fees", { position_address: p.position }).catch(e => ({ error: e.message }));
@@ -300,6 +314,45 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.instruction) {
         actionMap.set(p.position, { action: "INSTRUCTION" });
         continue;
+      }
+
+      // Check Osprey active strategies (Precision Flip / HFL Wide)
+      const tracked = getTrackedPosition(p.position);
+      if (tracked && tracked.strategy) {
+        const { ospreyStrategies } = await import("./config/osprey-strategies.js");
+        const osprey = ospreyStrategies.find(s => s.name === tracked.strategy);
+        if (osprey) {
+          if (osprey.model === "precision_flip" && osprey.flipBuffer && p.active_bin != null) {
+            const centerBin = Math.floor(((p.upper_bin ?? 0) + (p.lower_bin ?? 0)) / 2);
+            const delta = Math.abs(p.active_bin - centerBin);
+            if (delta >= osprey.flipBuffer) {
+              actionMap.set(p.position, {
+                action: "REBALANCE",
+                reason: `Precision Flip Reshape: active bin ${p.active_bin} shifted ${delta} bins away from center ${centerBin} (limit ${osprey.flipBuffer})`,
+                new_active_bin: p.active_bin,
+                shape: osprey.shape,
+                width: osprey.width
+              });
+              continue;
+            }
+          }
+
+          if (osprey.model === "hfl_wide" && p.active_bin != null) {
+            if (p.active_bin < (p.lower_bin ?? 0) || p.active_bin > (p.upper_bin ?? 0)) {
+              const minutesOOR = p.minutes_out_of_range ?? 0;
+              if (minutesOOR >= osprey.oorMinutesWait) {
+                actionMap.set(p.position, {
+                  action: "REBALANCE",
+                  reason: `HFL Wide Rebalance: OOR for ${minutesOOR}m (limit ${osprey.oorMinutesWait}m)`,
+                  new_active_bin: p.active_bin,
+                  shape: osprey.shape,
+                  width: osprey.width
+                });
+                continue;
+              }
+            }
+          }
+        }
       }
 
       const closeRule = getDeterministicCloseRule(p, config.management);
