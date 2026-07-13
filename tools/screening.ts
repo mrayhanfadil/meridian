@@ -675,10 +675,6 @@ export async function getTopCandidates({ limit = 10 }: GetTopCandidatesParams = 
         pushFilteredReason(filteredOut, p, "already have an open position in this pool");
         return false;
       }
-      if (p.quote?.mint === "So11111111111111111111111111111111111111112" || p.base?.mint === "So11111111111111111111111111111111111111112") {
-        pushFilteredReason(filteredOut, p, "uses Token-2022 Wrapped SOL (unsupported for auto-wrap)");
-        return false;
-      }
       if (occupiedMints.has(p.base?.mint)) {
         pushFilteredReason(filteredOut, p, "already holding this base token in another pool");
         return false;
