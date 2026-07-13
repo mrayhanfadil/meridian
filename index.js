@@ -700,7 +700,110 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     let deployAttempted = false;
     let deploySucceeded = false;
-    const { content } = await agentLoop(`
+
+    if (config.screening.deterministicScreening) {
+      log("cron", "Executing screening DETERMINISTICALLY (no LLM, bypassing agentLoop)");
+      if (liveMessage) {
+        await liveMessage.finalize("🔍 Screening Cycle (Deterministic)\nExecuting top-scoring candidate...").catch(() => {});
+      }
+
+      const target = passing[0];
+      const vol = target.pool.volatility ?? 0;
+      const minBins = config.strategy.minBinsBelow;
+      const maxBins = config.strategy.maxBinsBelow;
+      const binsBelow = Math.max(minBins, Math.min(maxBins, Math.round(minBins + (vol / 5) * (maxBins - minBins))));
+
+      log("cron", `Deploying position on ${target.pool.name} with ${binsBelow} bins below...`);
+      deployAttempted = true;
+      if (liveMessage) {
+        await liveMessage.toolStart("deploy_position");
+      }
+
+      let deployResult;
+      try {
+        const { deployPosition } = await import("./tools/dlmm.js");
+        deployResult = await deployPosition({
+          pool_address: target.pool.pool,
+          amount_sol: deployAmount,
+          strategy: config.strategy.strategy,
+          bins_below: binsBelow,
+          bins_above: 0,
+          volatility: vol,
+          pool_name: target.pool.name,
+          bin_step: target.pool.bin_step,
+          base_fee: target.pool.fee_pct,
+          fee_tvl_ratio: target.pool.fee_active_tvl_ratio,
+          organic_score: target.pool.organic_score,
+          entry_mcap: target.pool.mcap,
+          entry_tvl: target.pool.tvl ?? target.pool.active_tvl,
+          entry_volume: target.pool.volume_window,
+        });
+
+        deploySucceeded = Boolean(deployResult && deployResult.success !== false && deployResult.position_address);
+      } catch (err) {
+        log("cron_error", `Deterministic deploy failed: ${err.message}`);
+        deployResult = { success: false, error: err.message };
+      }
+
+      if (liveMessage) {
+        await liveMessage.toolFinish("deploy_position", deployResult, deploySucceeded);
+      }
+
+      if (deploySucceeded) {
+        screenReport = [
+          "🚀 DEPLOYED (DETERMINISTIC MODE)",
+          "",
+          target.pool.name,
+          target.pool.pool,
+          "",
+          `◎ ${deployAmount} SOL | ${config.strategy.strategy} | bin ${deployResult.active_bin || "?"}`,
+          `Range: $${deployResult.range_coverage?.minPrice?.toFixed(6) || "?"} → $${deployResult.range_coverage?.maxPrice?.toFixed(6) || "?"}`,
+          `Range cover: ${deployResult.range_coverage?.downside_pct || "?"}% downside | ${deployResult.range_coverage?.upside_pct || 0}% upside | ${deployResult.range_coverage?.width_pct || "?"}% total`,
+          "",
+          "MARKET",
+          `Fee/TVL: ${(target.pool.fee_active_tvl_ratio * 100).toFixed(2)}%`,
+          `Volume: $${target.pool.volume_window?.toLocaleString()}`,
+          `TVL: $${(target.pool.tvl ?? target.pool.active_tvl)?.toLocaleString()}`,
+          `Volatility: ${target.pool.volatility}`,
+          `Organic: ${target.pool.organic_score}`,
+          `Mcap: $${target.pool.mcap?.toLocaleString()}`,
+          `Age: ${target.pool.token_age_hours ?? "?"}h`,
+          "",
+          "AUDIT",
+          `Top10: ${target.ti?.audit?.top_holders_pct ?? "?"}%`,
+          `Bots: ${target.ti?.audit?.bot_holders_pct ?? "?"}%`,
+          `Fees paid: ${target.ti?.global_fees_sol ?? "?"} SOL`,
+          `Smart wallets: ${target.sw?.in_pool?.length ? target.sw.in_pool.map(w => w.name).join(", ") : "none"}`,
+          "",
+          "WHY THIS WON",
+          `Selected mathematically as the highest-scoring candidate (Score: ${target.pool.score?.toFixed(1) || "?"}) after clearing all hard-filters.`,
+        ].join("\n");
+
+        appendDecision({
+          type: "deploy",
+          actor: "SCREENER",
+          summary: `Deployed ${target.pool.name} deterministically`,
+          pool: target.pool.pool,
+          pool_name: target.pool.name,
+          amount_sol: deployAmount,
+        });
+      } else {
+        screenReport = [
+          "⛔ DEPLOY FAILED (DETERMINISTIC MODE)",
+          "",
+          `Target: ${target.pool.name} (${target.pool.pool})`,
+          `Error: ${deployResult?.error || "unknown error"}`,
+        ].join("\n");
+
+        appendDecision({
+          type: "no_deploy",
+          actor: "SCREENER",
+          summary: "Deterministic deploy attempt failed",
+          reason: deployResult?.error || "Unknown deployment error",
+        });
+      }
+    } else {
+      const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
@@ -778,21 +881,22 @@ IMPORTANT:
           await liveMessage?.toolFinish(name, result, success);
         },
       });
-    screenReport = content;
-    if (/⛔\s*NO DEPLOY/i.test(content)) {
-      appendDecision({
-        type: "no_deploy",
-        actor: "SCREENER",
-        summary: "LLM chose no deploy",
-        reason: stripThink(content).slice(0, 500),
-      });
-    } else if (!deploySucceeded) {
-      appendDecision({
-        type: "no_deploy",
-        actor: "SCREENER",
-        summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
-        reason: stripThink(content).slice(0, 500),
-      });
+      screenReport = content;
+      if (/⛔\s*NO DEPLOY/i.test(content)) {
+        appendDecision({
+          type: "no_deploy",
+          actor: "SCREENER",
+          summary: "LLM chose no deploy",
+          reason: stripThink(content).slice(0, 500),
+        });
+      } else if (!deploySucceeded) {
+        appendDecision({
+          type: "no_deploy",
+          actor: "SCREENER",
+          summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
+          reason: stripThink(content).slice(0, 500),
+        });
+      }
     }
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
