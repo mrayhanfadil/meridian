@@ -222,7 +222,7 @@ async function main() {
     t.last_sample_ok = ok;
     if (t.ok_count_12 + t.fail_count_12 > ROLLING_WINDOW) {
       const total = t.ok_count_12 + t.fail_count_12;
-      const overflow = total - ROLLING_WINDOW;
+      let overflow = total - ROLLING_WINDOW;
       if (t.fail_count_12 >= overflow) t.fail_count_12 -= overflow;
       else { overflow -= t.fail_count_12; t.fail_count_12 = 0; t.ok_count_12 = Math.max(0, t.ok_count_12 - overflow); }
     }
