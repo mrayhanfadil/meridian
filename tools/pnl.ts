@@ -141,6 +141,7 @@ function mapEntries(map: any): any[] {
 
 // ─── Build the shaped position object (matches getMyPositions output) ──
 function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any, solMode: boolean): any {
+  const tracked = getTrackedPosition(f.position);
   const priceX = f.baseMint ? (prices[f.baseMint] ?? 0) : 0;
 
   const xHuman = safeNum(f.xRaw) / 10 ** f.decX;
@@ -160,10 +161,13 @@ function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any,
   const claimedUsd = safeNum(meteora?.allTimeFees?.total?.usd);
   const claimedSol = safeNum(meteora?.allTimeFees?.total?.sol);
 
-  const pnlUsd = balancesUsd + withdrawUsd + claimableUsd + claimedUsd - depositsUsd;
-  const pnlSol = balancesSol + withdrawSol + claimableSol + claimedSol - depositsSol;
-  const pctUsd = depositsUsd > 0 ? (pnlUsd / depositsUsd) * 100 : 0;
-  const pctSol = depositsSol > 0 ? (pnlSol / depositsSol) * 100 : 0;
+  const fallbackDepositsSol = depositsSol > 0 ? depositsSol : (tracked?.initial_sol ?? tracked?.amount_sol ?? 0);
+  const fallbackDepositsUsd = depositsUsd > 0 ? depositsUsd : (fallbackDepositsSol * (solUsd ?? 0));
+
+  const pnlUsd = balancesUsd + withdrawUsd + claimableUsd + claimedUsd - fallbackDepositsUsd;
+  const pnlSol = balancesSol + withdrawSol + claimableSol + claimedSol - fallbackDepositsSol;
+  const pctUsd = fallbackDepositsUsd > 0 ? (pnlUsd / fallbackDepositsUsd) * 100 : 0;
+  const pctSol = fallbackDepositsSol > 0 ? (pnlSol / fallbackDepositsSol) * 100 : 0;
 
   const ourPct = solMode ? pctSol : pctUsd;
 
@@ -185,7 +189,6 @@ function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any,
   if (inRange) markInRange(f.position);
   else markOutOfRange(f.position);
 
-  const tracked = getTrackedPosition(f.position);
   const ageFromState = tracked?.deployed_at
     ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
     : null;

@@ -50797,5 +50797,55 @@
     "last_deployed_at": "2026-07-07T10:23:03.391Z",
     "last_outcome": "loss",
     "notes": []
+  },
+  "HXrB8AC9xLiZWZDbP3KrFmpXv9tYukpA3JGj65nor2eA": {
+    "name": "Bison-SOL",
+    "base_mint": null,
+    "deploys": [],
+    "total_deploys": 0,
+    "avg_pnl_pct": 0,
+    "win_rate": 0,
+    "adjusted_win_rate": 0,
+    "adjusted_win_rate_sample_count": 0,
+    "last_deployed_at": null,
+    "last_outcome": null,
+    "notes": [],
+    "snapshots": [
+      {
+        "ts": "2026-07-13T10:32:01.831Z",
+        "position": "8REg4k1dybxz4k3rUct71bw9th7zR3rZj4XKMiPJZFJs",
+        "pnl_pct": 0,
+        "pnl_usd": 0.2499,
+        "in_range": true,
+        "unclaimed_fees_usd": 0,
+        "minutes_out_of_range": 0,
+        "age_minutes": 1
+      }
+    ]
+  },
+  "J6GRue8vaaB3bdDSpCQiZeH9U5Wd2njzUBYYRHG6de3A": {
+    "name": "Wukong-SOL",
+    "base_mint": null,
+    "deploys": [],
+    "total_deploys": 0,
+    "avg_pnl_pct": 0,
+    "win_rate": 0,
+    "adjusted_win_rate": 0,
+    "adjusted_win_rate_sample_count": 0,
+    "last_deployed_at": null,
+    "last_outcome": null,
+    "notes": [],
+    "snapshots": [
+      {
+        "ts": "2026-07-13T10:32:01.896Z",
+        "position": "9UuJYZJZtz8gaFuEhqDVy85my9q5tem8TtZMMYes7r1h",
+        "pnl_pct": 0,
+        "pnl_usd": 0.2506,
+        "in_range": true,
+        "unclaimed_fees_usd": 0.0006,
+        "minutes_out_of_range": 0,
+        "age_minutes": 2
+      }
+    ]
   }
 }
