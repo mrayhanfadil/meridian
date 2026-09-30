@@ -30,6 +30,7 @@ import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
 import { computePositions, fetchDlmmPnlForPool } from "./pnl.js";
+import { isPnlFallbackUnpriceable, usablePnlPct } from "./pnl-safety.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -1259,21 +1260,24 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
           ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
           : null;
         const reportedPnlPct = lpData
-          ? parseFloat(config.management.solMode ? (lpData.pnl?.percentNative || 0) : (lpData.pnl?.percent || 0))
+          ? parseFloat(config.management.solMode ? lpData.pnl?.percentNative : lpData.pnl?.percent)
           : binData
-            ? parseFloat(config.management.solMode ? (binData.pnlSolPctChange || 0) : (binData.pnlPctChange || 0))
+            ? parseFloat(config.management.solMode ? binData.pnlSolPctChange : binData.pnlPctChange)
             : null;
         const derivedPnlPct = lpData
           ? deriveLpAgentPnlPct(lpData, config.management.solMode)
           : binData
             ? deriveOpenPnlPct(binData, config.management.solMode)
             : null;
-        const pnlPctDiff = reportedPnlPct != null && derivedPnlPct != null
+        const pnlPctDiff = Number.isFinite(reportedPnlPct) && Number.isFinite(derivedPnlPct)
           ? Math.abs(reportedPnlPct - derivedPnlPct)
           : null;
-        const pnlPctSuspicious = pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5);
+        // Divergence is informational; only absent/unusable PnL blocks exits.
+        const pnlPctSuspicious = isPnlFallbackUnpriceable(reportedPnlPct, derivedPnlPct);
         if (pnlPctSuspicious) {
-          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
+          log("positions_warn", `Unpriceable pnl_pct for ${positionAddress.slice(0, 8)}: no reported/derived value`);
+        } else if (pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5)) {
+          log("positions_warn", `pnl_pct divergence for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)} (informational)`);
         }
 
         positions.push({
@@ -1345,10 +1349,11 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
             : binData
             ? Math.round(parseFloat(binData.pnlUsd || 0) * 10000) / 10000
             : null,
-          pnl_pct:            (lpData || binData)
-            ? Math.round(reportedPnlPct * 100) / 100
-            : null,
-          pnl_pct_derived:    derivedPnlPct != null ? Math.round(derivedPnlPct * 100) / 100 : null,
+          pnl_pct:            (() => {
+            const usable = usablePnlPct(reportedPnlPct, derivedPnlPct);
+            return usable == null ? null : Math.round(usable * 100) / 100;
+          })(),
+          pnl_pct_derived:    Number.isFinite(derivedPnlPct) ? Math.round(derivedPnlPct * 100) / 100 : null,
           pnl_pct_diff:       pnlPctDiff != null ? Math.round(pnlPctDiff * 100) / 100 : null,
           pnl_pct_suspicious: !!pnlPctSuspicious,
           unclaimed_fees_true_usd: lpData

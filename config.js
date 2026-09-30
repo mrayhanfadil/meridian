@@ -140,6 +140,7 @@ export const config = {
     blockPvpSymbols:   u.blockPvpSymbols   ?? false, // hard-filter PVP rivals before the LLM sees them
     maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
     maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
+    loneCandidateMinDegen: u.loneCandidateMinDegen ?? 50,
     allowedLaunchpads: u.allowedLaunchpads ?? [],  // allow-list launchpads, [] = no allow-list
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
@@ -336,6 +337,7 @@ export const config = {
     source: nonEmptyString(u.pnlSource, "rpc"), // rpc | meteora (fallback-only)
     pollIntervalSec: Number(u.pnlPollIntervalSec ?? 3),
     depositCacheTtlSec: Number(u.pnlDepositCacheTtlSec ?? 300),
+    confirmTicks: Number(u.pnlConfirmTicks ?? 2),
   },
 
   // ─── GMGN (fee source for minTokenFeesSol gate) ──────────────
@@ -350,10 +352,16 @@ export const config = {
 
   // ─── Opportunity poller (catches strong pools between screening cycles) ──
   opportunity: {
-    enabled: u.opportunity?.enabled ?? true,
-    pollIntervalSec: u.opportunity?.pollIntervalSec ?? 45,
-    minDegenScore: u.opportunity?.minDegenScore ?? 30,
-    maxPoolsPerPoll: u.opportunity?.maxPoolsPerPoll ?? 3,
+    enabled: u.opportunity?.enabled ?? u.opportunityPollEnabled ?? true,
+    pollIntervalSec: Number(u.opportunity?.pollIntervalSec ?? u.opportunityPollIntervalSec ?? 45),
+    // Preserve the existing nested config while exposing the fields the poller reads.
+    limit: Number(u.opportunity?.limit ?? u.opportunity?.maxPoolsPerPoll ?? u.opportunityPollLimit ?? 10),
+    minScore: Number(u.opportunity?.minScore ?? u.opportunity?.minDegenScore ?? u.opportunityMinScore ?? 40),
+    smartWalletScoreBonus: Number(u.opportunity?.smartWalletScoreBonus ?? u.opportunitySmartWalletBonus ?? 20),
+    targetVolRatio: Number(u.opportunity?.targetVolRatio ?? u.degenTargetVolRatio ?? 20),
+    targetLpCount: Number(u.opportunity?.targetLpCount ?? u.degenTargetLpCount ?? 40),
+    targetFeeRatio: Number(u.opportunity?.targetFeeRatio ?? u.degenTargetFeeRatio ?? 0.20),
+    targetLiquidity: Number(u.opportunity?.targetLiquidity ?? u.degenTargetLiquidity ?? 20_000),
   },
 
   jupiter: {

@@ -139,6 +139,18 @@ function mapEntries(map: any): any[] {
   return map instanceof Map ? [...map.entries()] : Object.entries(map || {});
 }
 
+/** Missing Meteora deposit indexing alone is not a bad tick when the local
+ * position records its initial SOL cost. Only block PnL exits if the token
+ * cannot be priced or the selected unit has no usable cost basis. */
+export function isPnlTickUnpriceable({ priceMissing, depositsSol, depositsUsd, trackedSol, solUsd, solMode = true }: {
+  priceMissing: boolean; depositsSol: number; depositsUsd: number;
+  trackedSol: number; solUsd: number | null; solMode?: boolean;
+}): boolean {
+  const costBasis = solMode ? (depositsSol > 0 ? depositsSol : trackedSol)
+    : (depositsUsd > 0 ? depositsUsd : trackedSol * (solUsd ?? 0));
+  return priceMissing || !Number.isFinite(costBasis) || costBasis <= 0;
+}
+
 // ─── Build the shaped position object (matches getMyPositions output) ──
 function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any, solMode: boolean): any {
   const tracked = getTrackedPosition(f.position);
@@ -161,7 +173,8 @@ function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any,
   const claimedUsd = safeNum(meteora?.allTimeFees?.total?.usd);
   const claimedSol = safeNum(meteora?.allTimeFees?.total?.sol);
 
-  const fallbackDepositsSol = depositsSol > 0 ? depositsSol : (tracked?.initial_sol ?? tracked?.amount_sol ?? 0);
+  const trackedSol = Number(tracked?.initial_sol ?? tracked?.amount_sol ?? 0);
+  const fallbackDepositsSol = depositsSol > 0 ? depositsSol : trackedSol;
   const fallbackDepositsUsd = depositsUsd > 0 ? depositsUsd : (fallbackDepositsSol * (solUsd ?? 0));
 
   const pnlUsd = balancesUsd + withdrawUsd + claimableUsd + claimedUsd - fallbackDepositsUsd;
@@ -177,9 +190,11 @@ function buildPosition(f: any, prices: any, solUsd: number | null, meteora: any,
   const holdsTokenX = xHuman > 0 || feeXHuman > 0;
   const priceMissing = !((solUsd ?? 0) > 0) || (holdsTokenX && !!f.baseMint && !(priceX > 0));
   const depositsMissing = (solMode ? depositsSol : depositsUsd) <= 0;
-  const pnlPctSuspicious = priceMissing || depositsMissing;
+  const pnlPctSuspicious = isPnlTickUnpriceable({
+    priceMissing, depositsSol, depositsUsd, trackedSol, solUsd, solMode,
+  });
   if (pnlPctSuspicious) {
-    log("pnl_warn", `${f.position.slice(0, 8)} suspicious tick — priceMissing=${priceMissing} depositsMissing=${depositsMissing} (solUsd=${solUsd}, priceX=${priceX})`);
+    log("pnl_warn", `${f.position.slice(0, 8)} unpriceable tick — priceMissing=${priceMissing} depositsMissing=${depositsMissing} trackedSol=${trackedSol > 0}`);
   }
 
   const inRange = f.active != null && f.lower != null && f.upper != null

@@ -412,6 +412,14 @@ Standalone process — `cd discord-listener && npm install && npm start`. Shares
 
 ---
 
+## Upstream June 25 behavior on the TypeScript fork
+
+The upstream fixes were originally copied into this fork on June 25, but later JS→TS migration left two gaps: `config.opportunity` no longer exposed `limit`/`minScore`/scoring targets read by `index.js`, and `tools/screening.ts` retained the pre-recalibration Degen Score. The port now maps the existing nested `user-config.json` opportunity fields (`maxPoolsPerPoll`, `minDegenScore`) into the poller's runtime fields and normalizes score activity to 30 minutes. With the current config, the enabled opportunity poller has a 30s cadence, limit 3 and score gate 30; **starting PM2 can deploy real SOL (`dryRun: false`)**. Do not restart as part of a code integration.
+
+The 3s PnL poller uses `tools/pnl.ts` (primary RPC) before `tools/dlmm.js` (Meteora fallback). Missing Meteora deposit indexing does not block exits when the tracked initial SOL provides a cost basis; missing prices or cost basis still block PnL-based exits. Reported-vs-derived divergence on the fallback path is logged, not an automatic PnL exit freeze. Tests: `node --import tsx --test test/upstream-jun25.test.mjs` plus `npx tsc -p tsconfig.json --noEmit`.
+
+---
+
 ## Patterns to copy
 
 When adding a new tool that reads on-chain data, copy the **cache + inflight dedup + `force` flag** pattern from `getMyPositions` (`tools/dlmm.js:1154`). The `force: true` is what the deploy safety check relies on.

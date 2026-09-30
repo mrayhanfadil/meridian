@@ -20,6 +20,7 @@ const TIMEFRAME_MINUTES: { [key: string]: number } = {
   "12h": 720,
   "24h": 1440,
 };
+const DEGEN_REFERENCE_MINUTES = 30;
 
 const PVP_SHORTLIST_LIMIT = 2;
 const PVP_RIVAL_LIMIT = 2;
@@ -100,23 +101,26 @@ export interface DegenScoreTargets {
  */
 export function degenScore(pool: Pool, targets: DegenScoreTargets = {}): number {
   const {
-    targetVolRatio = 500,
-    targetLpCount = 150,
-    targetFeeRatio = 1.0,
-    targetLiquidity = 50000,
+    targetVolRatio = 20,
+    targetLpCount = 40,
+    targetFeeRatio = 0.20,
+    targetLiquidity = 20000,
   } = targets;
 
   const La = Number(pool.active_tvl ?? pool.tvl ?? 0);
   if (!Number.isFinite(La) || La <= 0) return 0;
 
   const clamp01 = (x: number): number => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0);
+  // Normalize window-dependent activity to 30m; liquidity is a level.
+  const timeframeMinutes = TIMEFRAME_MINUTES[config.screening.timeframe] || DEGEN_REFERENCE_MINUTES;
+  const timeframeScale = DEGEN_REFERENCE_MINUTES / timeframeMinutes;
 
   const volRatio = Number(pool.volume_active_tvl_ratio);
-  const tradingRatio = Number.isFinite(volRatio) ? volRatio : Number(pool.volume_window || 0) / La;
-  const feeRatio = Number.isFinite(Number(pool.fee_active_tvl_ratio))
+  const tradingRatio = (Number.isFinite(volRatio) ? volRatio : Number(pool.volume_window || 0) / La) * timeframeScale;
+  const feeRatio = (Number.isFinite(Number(pool.fee_active_tvl_ratio))
     ? Number(pool.fee_active_tvl_ratio)
-    : Number(pool.fee_window || 0) / La;
-  const lpActivity = Number(pool.unique_lps || 0) + Number(pool.positions_created || 0);
+    : Number(pool.fee_window || 0) / La) * timeframeScale;
+  const lpActivity = (Number(pool.unique_lps || 0) + Number(pool.positions_created || 0)) * timeframeScale;
 
   const sTrading = clamp01(tradingRatio / targetVolRatio);
   const sLp      = clamp01(lpActivity / targetLpCount);
